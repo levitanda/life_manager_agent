@@ -79,7 +79,12 @@ def add_task(
 
     if attendees:
         event["attendees"] = [{"email": email} for email in attendees]
-    result = _get_service().events().insert(calendarId=cal_id, body=event).execute()
+    result = (
+        _get_service()
+        .events()
+        .insert(calendarId=cal_id, body=event, sendUpdates="all" if attendees else "none")
+        .execute()
+    )
     return result["id"]
 
 
