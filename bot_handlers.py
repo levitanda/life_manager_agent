@@ -693,10 +693,14 @@ async def _send_morning_digest(app: Application, target_date: datetime.date | No
             is_today = target_date is None or target_date == today
             news = news_client.get_news_headlines(max_per_source=5) if is_today else []
             birthdays = birthday_client.get_todays_birthdays() if is_today else []
+            recent_msgs = conversation.get_history()
+            summaries = conversation.get_recent_summaries()
 
             text = digest_module.generate_morning_digest(
                 events, short, long_, yesterday, emails, target_date, weather,
                 news=news or None, birthdays=birthdays or None,
+                recent_messages=recent_msgs or None,
+                summaries=summaries or None,
             )
 
             with open(config.ALICE_DIGEST_FILE, "w", encoding="utf-8") as f:
@@ -705,6 +709,9 @@ async def _send_morning_digest(app: Application, target_date: datetime.date | No
             for chunk in _split_message(text):
                 await app.bot.send_message(chat_id=config.TELEGRAM_CHAT_ID, text=chunk)
             pushover_client.send_push(text[:1024], title="☀️ Доброе утро!")
+            # Add digest to conversation history so today's chat continues from it
+            if is_today:
+                conversation.add("(утренний дайджест)", text)
             return
         except Exception as e:
             last_error = e

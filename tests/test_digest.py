@@ -65,6 +65,47 @@ def test_generate_morning_digest_no_news_no_birthdays():
     assert "НОВОСТИ" not in prompt
 
 
+def test_generate_morning_digest_with_recent_messages():
+    """Recent conversation history should be injected into the prompt."""
+    messages = [
+        {"role": "user", "content": "сегодня плохо себя чувствую, голова болит"},
+        {"role": "assistant", "content": "понимаю, постарайся отдохнуть"},
+    ]
+    with patch("anthropic.Anthropic") as mock_cls:
+        mock_cls.return_value = _mock_claude()
+        digest_module.generate_morning_digest(
+            SAMPLE_EVENTS, SAMPLE_SHORT, SAMPLE_LONG, None,
+            recent_messages=messages,
+        )
+        prompt = mock_cls.return_value.messages.create.call_args[1]["messages"][0]["content"]
+    assert "голова болит" in prompt
+    assert "НЕДАВНИЙ РАЗГОВОР" in prompt
+
+
+def test_generate_morning_digest_with_session_summaries():
+    """Long-term session summaries should be in the prompt."""
+    sums = [{"date": "2026-05-15 21:00", "summary": "Обсуждали проект Х, переживала из-за дедлайна"}]
+    with patch("anthropic.Anthropic") as mock_cls:
+        mock_cls.return_value = _mock_claude()
+        digest_module.generate_morning_digest(
+            SAMPLE_EVENTS, SAMPLE_SHORT, SAMPLE_LONG, None,
+            summaries=sums,
+        )
+        prompt = mock_cls.return_value.messages.create.call_args[1]["messages"][0]["content"]
+    assert "проект Х" in prompt
+    assert "ДОЛГОСРОЧНАЯ ПАМЯТЬ" in prompt
+
+
+def test_format_history_truncates_long_messages():
+    long_msg = "x" * 1000
+    result = digest_module._format_history([{"role": "user", "content": long_msg}])
+    assert len(result) < 400  # truncated to 300 chars + role prefix
+
+
+def test_format_history_empty():
+    assert digest_module._format_history([]) == ""
+
+
 def test_generate_morning_digest_with_weather():
     with patch("anthropic.Anthropic") as mock_cls:
         mock_cls.return_value = _mock_claude()

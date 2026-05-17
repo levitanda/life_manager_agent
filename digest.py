@@ -65,6 +65,28 @@ def _format_birthdays(birthdays: list[dict]) -> str:
     return f"Сегодня день рождения: {names}!"
 
 
+def _format_history(messages: list[dict]) -> str:
+    """Compact rendering of last messages, with trimmed assistant replies."""
+    if not messages:
+        return ""
+    lines = []
+    for msg in messages[-12:]:
+        role = "Я" if msg.get("role") == "user" else "Ты"
+        content = (msg.get("content") or "")[:300]
+        lines.append(f"{role}: {content}")
+    return "\n".join(lines)
+
+
+def _format_summaries(summaries: list[dict]) -> str:
+    """Last few session summaries — long-term memory across days."""
+    if not summaries:
+        return ""
+    lines = []
+    for s in summaries[-5:]:
+        lines.append(f"[{s.get('date','?')}] {s.get('summary','')}")
+    return "\n\n".join(lines)
+
+
 def generate_morning_digest(
     calendar_events: list[dict],
     short_tasks: list[dict],
@@ -75,6 +97,8 @@ def generate_morning_digest(
     weather: Optional[str] = None,
     news: Optional[list[dict]] = None,
     birthdays: Optional[list[dict]] = None,
+    recent_messages: Optional[list[dict]] = None,
+    summaries: Optional[list[dict]] = None,
 ) -> str:
     tz = pytz.timezone(config.TIMEZONE)
     ref_dt = (
@@ -95,7 +119,21 @@ def generate_morning_digest(
     news_section = f"\nНОВОСТИ:\n{_format_news(news)}\n" if news else ""
     birthday_section = f"\n🎂 {_format_birthdays(birthdays)}\n" if birthdays else ""
 
-    prompt = f"""Ты личный ИИ-ассистент. Составь утренний дайджест на русском языке для {date_str}.
+    history_text = _format_history(recent_messages or [])
+    history_section = (
+        f"\n=== НЕДАВНИЙ РАЗГОВОР С ПОЛЬЗОВАТЕЛЕМ ===\n{history_text}\n"
+        if history_text else ""
+    )
+    summaries_text = _format_summaries(summaries or [])
+    summaries_section = (
+        f"\n=== ДОЛГОСРОЧНАЯ ПАМЯТЬ (резюме прошлых сессий) ===\n{summaries_text}\n"
+        if summaries_text else ""
+    )
+
+    prompt = f"""Ты личный ИИ-ассистент Дарьи. Составь утренний дайджест на русском языке для {date_str}.
+
+Это НЕ первое сообщение — ты уже общаешься с Дарьей продолжительное время. Тон должен быть как у того же человека, который вчера с ней разговаривал. Если что-то обсуждалось накануне (планы, переживания, важные события) — обязательно упомяни это в дайджесте естественно, как продолжение того разговора.
+{summaries_section}{history_section}
 
 СОБЫТИЯ В КАЛЕНДАРЕ:
 {_format_events(calendar_events)}
@@ -110,20 +148,21 @@ def generate_morning_digest(
 {yesterday_progress or "Нет данных."}
 {weather_section}{birthday_section}{emails_section}{news_section}
 Напиши дружелюбный, мотивирующий дайджест. Структура:
-1. Приветствие с датой и погодой (если есть); если есть дни рождения — обязательно упомяни их тепло
-2. Что сегодня в расписании
-3. На чём сосредоточиться из задач (приоритеты)
-4. Важные письма — только если есть что-то требующее ответа или действия (1-3 письма максимум)
-5. Новости — ОБЯЗАТЕЛЬНО отдельно по каждому каналу:
+1. Приветствие с датой и погодой; если из недавнего разговора видно что-то важное (настроение, события, переживания) — отрази это в приветствии. Не «доброе утро» в пустоту, а как будто продолжаешь живой разговор.
+2. Если есть дни рождения — обязательно упомяни их тепло
+3. Что сегодня в расписании
+4. На чём сосредоточиться из задач (приоритеты). Если вчера обсуждали конкретные планы — свяжи их с сегодняшними задачами.
+5. Важные письма — только если есть что-то требующее ответа или действия (1-3 письма максимум)
+6. Новости — ОБЯЗАТЕЛЬНО отдельно по каждому каналу:
    • Кан 11: 2-3 главные темы + одна фраза — общий фон новостей канала
    • Кешет 12: 2-3 главные темы + одна фраза — общий фон
    • Дождь: 2-3 главные темы + одна фраза — общий фон
    Если какого-то канала нет в данных — пропусти его без упоминания.
-6. Напоминание о долгосрочных целях
-7. Одна идея для отдыха или развития на сегодня
-8. Короткое мотивирующее напутствие
+7. Напоминание о долгосрочных целях. Если из памяти видно прогресс или застой — упомяни.
+8. Одна идея для отдыха или развития на сегодня. Если из истории видны интересы пользователя — попади в них.
+9. Короткое мотивирующее напутствие — личное, не шаблонное.
 
-Будь конкретным, не повторяй просто список — дай осмысленные рекомендации. Пиши живым языком, без канцеляризма."""
+Будь конкретным и живым. Если в разговоре было что-то эмоционально важное (заболел, устала, переживает) — обязательно среагируй на это в дайджесте. Не игнорируй контекст. Не повторяй просто список — дай осмысленные рекомендации."""
 
     client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
     message = client.messages.create(
