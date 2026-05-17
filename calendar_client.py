@@ -224,6 +224,158 @@ def get_todays_calendar_events(target_date: Optional[datetime.date] = None) -> l
     return events
 
 
+def reschedule_task(
+    task_id: str,
+    cal_id: str,
+    new_start_dt: datetime.datetime,
+    new_end_dt: datetime.datetime,
+) -> bool:
+    """Move a timed event to a new start/end datetime."""
+    tz = pytz.timezone(config.TIMEZONE)
+    if new_start_dt.tzinfo is None:
+        new_start_dt = tz.localize(new_start_dt)
+    if new_end_dt.tzinfo is None:
+        new_end_dt = tz.localize(new_end_dt)
+    svc = _get_service()
+    event = svc.events().get(calendarId=cal_id, eventId=task_id).execute()
+    event["start"] = {"dateTime": new_start_dt.isoformat(), "timeZone": config.TIMEZONE}
+    event["end"] = {"dateTime": new_end_dt.isoformat(), "timeZone": config.TIMEZONE}
+    svc.events().update(calendarId=cal_id, eventId=task_id, body=event).execute()
+    return True
+
+
+def get_all_events_for_date(target_date: datetime.date) -> list[dict]:
+    """Return all timed events from primary + task calendars for a date."""
+    tz = pytz.timezone(config.TIMEZONE)
+    start = datetime.datetime.combine(target_date, datetime.time.min, tzinfo=tz).isoformat()
+    end = datetime.datetime.combine(target_date, datetime.time.max, tzinfo=tz).isoformat()
+
+    cal_ids = ["primary"]
+    try:
+        cal_ids.append(_get_or_create_calendar(config.SHORT_TASK_CALENDAR))
+        cal_ids.append(_get_or_create_calendar(config.LONG_TASK_CALENDAR))
+    except Exception:
+        pass
+
+    events = []
+    svc = _get_service()
+    for cal_id in cal_ids:
+        try:
+            result = svc.events().list(
+                calendarId=cal_id,
+                timeMin=start,
+                timeMax=end,
+                singleEvents=True,
+                orderBy="startTime",
+            ).execute()
+            for ev in result.get("items", []):
+                s_info = ev["start"]
+                e_info = ev.get("end", {})
+                if "dateTime" in s_info:
+                    ev_start = datetime.datetime.fromisoformat(s_info["dateTime"]).astimezone(tz)
+                    ev_end = datetime.datetime.fromisoformat(e_info["dateTime"]).astimezone(tz)
+                    events.append({
+                        "title": ev.get("summary", ""),
+                        "start": ev_start,
+                        "end": ev_end,
+                    })
+        except Exception:
+            pass
+
+    return sorted(events, key=lambda e: e["start"])
+
+
+def _slot_minutes(slot: dict) -> int:
+    sh, sm = map(int, slot["start"].split(":"))
+    eh, em = map(int, slot["end"].split(":"))
+    return (eh * 60 + em) - (sh * 60 + sm)
+
+
+def find_free_slots(
+    target_date: datetime.date,
+    duration_minutes: int = 60,
+    work_start: str = "09:00",
+    work_end: str = "22:00",
+) -> list[dict]:
+    """Return free time slots on target_date within work hours."""
+    tz = pytz.timezone(config.TIMEZONE)
+    ws_h, ws_m = map(int, work_start.split(":"))
+    we_h, we_m = map(int, work_end.split(":"))
+    day_start = tz.localize(datetime.datetime(target_date.year, target_date.month, target_date.day, ws_h, ws_m))
+    day_end = tz.localize(datetime.datetime(target_date.year, target_date.month, target_date.day, we_h, we_m))
+
+    events = get_all_events_for_date(target_date)
+    busy = sorted([(ev["start"], ev["end"]) for ev in events])
+
+    # Merge overlapping busy intervals
+    merged: list[list] = []
+    for b_start, b_end in busy:
+        if merged and b_start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], b_end)
+        else:
+            merged.append([b_start, b_end])
+
+    slots = []
+    cursor = day_start
+    for b_start, b_end in merged:
+        if cursor + datetime.timedelta(minutes=duration_minutes) <= b_start:
+            slot = {"start": cursor.strftime("%H:%M"), "end": b_start.strftime("%H:%M")}
+            if _slot_minutes(slot) >= duration_minutes:
+                slots.append(slot)
+        cursor = max(cursor, b_end)
+
+    if cursor + datetime.timedelta(minutes=duration_minutes) <= day_end:
+        slot = {"start": cursor.strftime("%H:%M"), "end": day_end.strftime("%H:%M")}
+        if _slot_minutes(slot) >= duration_minutes:
+            slots.append(slot)
+
+    return slots
+
+
+def get_conflicts(start_dt: datetime.datetime, end_dt: datetime.datetime) -> list[str]:
+    """Return titles of timed events that overlap the given window."""
+    tz = pytz.timezone(config.TIMEZONE)
+    if start_dt.tzinfo is None:
+        start_dt = tz.localize(start_dt)
+    if end_dt.tzinfo is None:
+        end_dt = tz.localize(end_dt)
+    events = get_all_events_for_date(start_dt.date())
+    return [ev["title"] for ev in events if ev["start"] < end_dt and ev["end"] > start_dt]
+
+
+def get_week_events(start_date: datetime.date, end_date: datetime.date) -> dict[str, list[dict]]:
+    """Return primary calendar events for a date range, grouped by ISO date string."""
+    tz = pytz.timezone(config.TIMEZONE)
+    start = datetime.datetime.combine(start_date, datetime.time.min, tzinfo=tz).isoformat()
+    end = datetime.datetime.combine(end_date, datetime.time.max, tzinfo=tz).isoformat()
+
+    result = (
+        _get_service()
+        .events()
+        .list(
+            calendarId="primary",
+            timeMin=start,
+            timeMax=end,
+            singleEvents=True,
+            orderBy="startTime",
+        )
+        .execute()
+    )
+
+    week: dict[str, list[dict]] = {}
+    for ev in result.get("items", []):
+        s_info = ev["start"]
+        if "dateTime" in s_info:
+            ev_dt = datetime.datetime.fromisoformat(s_info["dateTime"]).astimezone(tz)
+            date_str = ev_dt.date().isoformat()
+            time_str = ev_dt.strftime("%H:%M")
+        else:
+            date_str = s_info["date"]
+            time_str = "весь день"
+        week.setdefault(date_str, []).append({"title": ev.get("summary", "Без названия"), "time": time_str})
+    return week
+
+
 def get_progress_before_date(target_date: Optional[datetime.date] = None) -> Optional[str]:
     """Return the progress note for the day before target_date (default: yesterday)."""
     tz = pytz.timezone(config.TIMEZONE)

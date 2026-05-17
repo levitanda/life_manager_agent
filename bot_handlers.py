@@ -19,6 +19,8 @@ from telegram.ext import (
 
 import openai
 
+import asyncio
+
 import calendar_client
 import config
 import contacts_client
@@ -26,6 +28,8 @@ import conversation
 import weather_client
 import digest as digest_module
 import gmail_client
+import news_client
+import birthday_client
 import parser
 import pushover_client
 
@@ -310,6 +314,32 @@ async def _execute_action(
             email = contacts_client.find_contact_email(name)
             (attendee_emails if email else not_found).append(email or name)
 
+        # Conflict detection for timed events
+        if start_dt:
+            end_dt = start_dt + datetime.timedelta(minutes=duration_minutes)
+            try:
+                conflicts = calendar_client.get_conflicts(start_dt, end_dt)
+            except Exception:
+                conflicts = []
+            if conflicts:
+                context.user_data["pending_task"] = {
+                    "title": title, "task_type": task_type,
+                    "due_date": due_date, "end_date": end_date,
+                    "start_dt": start_dt, "duration_minutes": duration_minutes,
+                    "attendee_emails": attendee_emails, "not_found": not_found,
+                }
+                conflict_list = ", ".join(conflicts[:3])
+                keyboard = InlineKeyboardMarkup([[
+                    InlineKeyboardButton("✅ Добавить всё равно", callback_data="conflict_confirm"),
+                    InlineKeyboardButton("❌ Отменить", callback_data="conflict_cancel"),
+                ]])
+                response_text = (
+                    f"⚠️ В это время уже есть: {conflict_list}\n"
+                    f"Добавить «{title}» на {start_dt.strftime('%d.%m.%Y в %H:%M')} всё равно?"
+                )
+                await update.message.reply_text(response_text, reply_markup=keyboard)
+                return response_text
+
         try:
             calendar_client.add_task(title, task_type, due_date=due_date, end_date=end_date,
                                      start_dt=start_dt, duration_minutes=duration_minutes,
@@ -394,6 +424,81 @@ async def _execute_action(
         await update.message.reply_text(response_text)
         return response_text
 
+    elif intent == "reschedule_task":
+        raw_num = action.get("task_number")
+        if isinstance(raw_num, list):
+            raw_num = raw_num[0] if raw_num else None
+        try:
+            task_number = int(raw_num) if raw_num is not None else None
+        except (ValueError, TypeError):
+            task_number = None
+
+        if not task_number or not (1 <= task_number <= len(all_tasks)):
+            response_text = "Не нашёл задачу. Напиши /tasks чтобы увидеть список с номерами."
+            await update.message.reply_text(response_text)
+            return response_text
+
+        task = all_tasks[task_number - 1]
+        date_str = action.get("date")
+        time_str = action.get("time")
+        duration_minutes = int(action.get("duration_minutes") or 60)
+
+        if not time_str:
+            response_text = "Укажи новое время для переноса (например, 'перенеси задачу 2 на завтра в 15:00')."
+            await update.message.reply_text(response_text)
+            return response_text
+
+        tz = pytz.timezone(config.TIMEZONE)
+        base = datetime.date.fromisoformat(date_str) if date_str else datetime.datetime.now(tz).date()
+        h, m = map(int, time_str.split(":"))
+        new_start = tz.localize(datetime.datetime(base.year, base.month, base.day, h, m))
+        new_end = new_start + datetime.timedelta(minutes=duration_minutes)
+
+        try:
+            calendar_client.reschedule_task(task["id"], task["cal_id"], new_start, new_end)
+            response_text = f"📅 Перенесено: «{task['title']}» → {new_start.strftime('%d.%m.%Y в %H:%M')}"
+        except Exception as e:
+            logger.error("reschedule_task failed: %s", e)
+            response_text = "Не удалось перенести задачу, попробуй ещё раз."
+        await update.message.reply_text(response_text)
+        return response_text
+
+    elif intent == "find_free_time":
+        date_str = action.get("date")
+        duration_minutes = int(action.get("duration_minutes") or 60)
+        tz = pytz.timezone(config.TIMEZONE)
+        target_date = datetime.date.fromisoformat(date_str) if date_str else datetime.datetime.now(tz).date()
+        try:
+            slots = calendar_client.find_free_slots(target_date, duration_minutes)
+            if slots:
+                slot_lines = "\n".join(f"• {s['start']}–{s['end']}" for s in slots)
+                response_text = f"🕐 Свободное время {target_date.strftime('%d.%m')}:\n{slot_lines}"
+            else:
+                response_text = f"Свободных окон от {duration_minutes} мин. на {target_date.strftime('%d.%m')} не нашлось."
+        except Exception as e:
+            logger.error("find_free_time failed: %s", e)
+            response_text = "Не удалось проверить расписание."
+        await update.message.reply_text(response_text)
+        return response_text
+
+    elif intent == "get_weekly_digest":
+        tz = pytz.timezone(config.TIMEZONE)
+        today = datetime.datetime.now(tz).date()
+        # Start from Monday of current week
+        monday = today - datetime.timedelta(days=today.weekday())
+        sunday = monday + datetime.timedelta(days=6)
+        await update.message.reply_text("⏳ Составляю недельный обзор...")
+        try:
+            week_events = calendar_client.get_week_events(monday, sunday)
+            short = calendar_client.get_active_tasks("short")
+            long_ = calendar_client.get_active_tasks("long")
+            text = digest_module.generate_weekly_digest(week_events, short, long_)
+        except Exception as e:
+            logger.error("weekly digest failed: %s", e)
+            text = "Не удалось создать недельный обзор."
+        await update.message.reply_text(text)
+        return "[недельный обзор отправлен]"
+
     elif intent == "send_email":
         context.user_data["pending_email"] = {
             "to_email": action.get("to_email"),
@@ -452,6 +557,32 @@ async def callback_email(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await query.edit_message_text("Отменено.")
 
 
+async def callback_conflict(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    data = context.user_data.pop("pending_task", {})
+
+    if query.data == "conflict_confirm" and data:
+        try:
+            calendar_client.add_task(
+                data["title"], data["task_type"],
+                due_date=data.get("due_date"), end_date=data.get("end_date"),
+                start_dt=data.get("start_dt"), duration_minutes=data.get("duration_minutes", 60),
+                attendees=data.get("attendee_emails") or None,
+            )
+            start_dt = data.get("start_dt")
+            time_label = start_dt.strftime("%d.%m.%Y в %H:%M") if start_dt else ""
+            msg = f"✅ Добавлено: «{data['title']}» на {time_label}"
+            if data.get("not_found"):
+                msg += f"\n⚠️ Не нашёл в контактах: {', '.join(data['not_found'])}"
+        except Exception as e:
+            logger.error("conflict_confirm add_task failed: %s", e)
+            msg = f"Ошибка при добавлении: {e}"
+        await query.edit_message_text(msg)
+    else:
+        await query.edit_message_text("Отменено.")
+
+
 async def _send_morning_digest(app: Application, target_date: datetime.date | None = None) -> None:
     last_error = None
     for attempt in range(3):
@@ -462,8 +593,13 @@ async def _send_morning_digest(app: Application, target_date: datetime.date | No
             yesterday = calendar_client.get_progress_before_date(target_date)
             emails = gmail_client.get_unread_emails() if target_date is None else []
             weather = weather_client.get_weather(target_date)
+            news = news_client.get_news_headlines() if target_date is None else []
+            birthdays = birthday_client.get_todays_birthdays() if target_date is None else []
 
-            text = digest_module.generate_morning_digest(events, short, long_, yesterday, emails, target_date, weather)
+            text = digest_module.generate_morning_digest(
+                events, short, long_, yesterday, emails, target_date, weather,
+                news=news or None, birthdays=birthdays or None,
+            )
 
             with open(config.ALICE_DIGEST_FILE, "w", encoding="utf-8") as f:
                 f.write(text)
@@ -536,6 +672,7 @@ def register_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("digest", cmd_digest))
     app.add_handler(progress_conv)
     app.add_handler(CallbackQueryHandler(callback_email, pattern="^email_"))
+    app.add_handler(CallbackQueryHandler(callback_conflict, pattern="^conflict_"))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     # natural language — lowest priority, catches everything else
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_natural))

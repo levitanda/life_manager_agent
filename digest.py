@@ -45,6 +45,26 @@ def _format_emails(emails: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _format_news(news: list[dict]) -> str:
+    if not news:
+        return "Новости недоступны."
+    lines = []
+    current_source = None
+    for item in news:
+        if item["source"] != current_source:
+            current_source = item["source"]
+            lines.append(f"\n{current_source}:")
+        lines.append(f"  • {item['title']}")
+    return "\n".join(lines).strip()
+
+
+def _format_birthdays(birthdays: list[dict]) -> str:
+    if not birthdays:
+        return ""
+    names = ", ".join(b["name"] for b in birthdays)
+    return f"Сегодня день рождения: {names}!"
+
+
 def generate_morning_digest(
     calendar_events: list[dict],
     short_tasks: list[dict],
@@ -53,6 +73,8 @@ def generate_morning_digest(
     emails: Optional[list[dict]] = None,
     target_date: Optional[datetime.date] = None,
     weather: Optional[str] = None,
+    news: Optional[list[dict]] = None,
+    birthdays: Optional[list[dict]] = None,
 ) -> str:
     tz = pytz.timezone(config.TIMEZONE)
     ref_dt = (
@@ -69,7 +91,9 @@ def generate_morning_digest(
     if emails is not None:
         emails_section = f"\nНЕПРОЧИТАННЫЕ ПИСЬМА (последние 2 дня):\n{_format_emails(emails)}\n"
 
-    weather_section = f"\nПОГОДА В НЕШЕРЕ: {weather}\n" if weather else ""
+    weather_section = f"\nПОГОДА: {weather}\n" if weather else ""
+    news_section = f"\nНОВОСТИ:\n{_format_news(news)}\n" if news else ""
+    birthday_section = f"\n🎂 {_format_birthdays(birthdays)}\n" if birthdays else ""
 
     prompt = f"""Ты личный ИИ-ассистент. Составь утренний дайджест на русском языке для {date_str}.
 
@@ -84,17 +108,66 @@ def generate_morning_digest(
 
 ПРОГРЕСС ЗА ВЧЕРА:
 {yesterday_progress or "Нет данных."}
-{weather_section}{emails_section}
+{weather_section}{birthday_section}{emails_section}{news_section}
 Напиши дружелюбный, мотивирующий дайджест. Структура:
-1. Приветствие с датой и погодой (если есть)
+1. Приветствие с датой и погодой (если есть); если есть дни рождения — обязательно упомяни их тепло
 2. Что сегодня в расписании
 3. На чём сосредоточиться из задач (приоритеты)
-4. Важные письма — только если есть что-то требующее ответа или действия (1-3 письма максимум, остальные игнорируй)
-5. Напоминание о долгосрочных целях
-6. Одна идея для отдыха или развития на сегодня
-7. Короткое мотивирующее напутствие
+4. Важные письма — только если есть что-то требующее ответа или действия (1-3 письма максимум)
+5. Краткая сводка новостей (2-3 ключевые темы, без пересказа всех заголовков)
+6. Напоминание о долгосрочных целях
+7. Одна идея для отдыха или развития на сегодня
+8. Короткое мотивирующее напутствие
 
 Будь конкретным, не повторяй просто список — дай осмысленные рекомендации. Пиши живым языком, без канцеляризма."""
+
+    client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+    message = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=1024,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return message.content[0].text
+
+
+def generate_weekly_digest(
+    week_events: dict,
+    short_tasks: list[dict],
+    long_tasks: list[dict],
+) -> str:
+    tz = pytz.timezone(config.TIMEZONE)
+    today = datetime.datetime.now(tz).date()
+
+    weekday_ru_short = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+    events_lines = []
+    for date_str in sorted(week_events.keys()):
+        date = datetime.date.fromisoformat(date_str)
+        label = weekday_ru_short[date.weekday()]
+        day_evs = week_events[date_str]
+        day_lines = "  " + "\n  ".join(f"{ev['time']} — {ev['title']}" for ev in day_evs)
+        events_lines.append(f"{label} {date.strftime('%d.%m')}:\n{day_lines}")
+
+    events_text = "\n".join(events_lines) if events_lines else "Событий не запланировано."
+
+    prompt = f"""Ты личный ИИ-ассистент. Составь еженедельный обзор расписания на русском языке (неделя с {today.strftime('%d.%m.%Y')}).
+
+СОБЫТИЯ НА НЕДЕЛЮ:
+{events_text}
+
+КРАТКОСРОЧНЫЕ ЗАДАЧИ:
+{_format_tasks(short_tasks)}
+
+ДОЛГОСРОЧНЫЕ ЗАДАЧИ:
+{_format_tasks(long_tasks)}
+
+Составь дружелюбный и полезный обзор недели. Структура:
+1. Общая картина недели: насколько она загружена
+2. Самые важные события и встречи по дням
+3. Задачи — на что обратить внимание, приоритеты
+4. Рекомендации по планированию: где есть окна, что лучше сделать заранее
+5. Короткое мотивирующее слово
+
+Пиши конкретно и по делу, без пустых фраз."""
 
     client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
     message = client.messages.create(

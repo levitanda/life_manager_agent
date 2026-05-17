@@ -91,7 +91,7 @@ def parse_message(
 {{
   "actions": [
     {{
-      "intent": "add_task" | "complete_task" | "delete_task" | "show_tasks" | "get_digest" | "get_weather" | "send_to_alice" | "save_progress" | "send_email" | "chat",
+      "intent": "add_task" | "complete_task" | "delete_task" | "reschedule_task" | "show_tasks" | "get_digest" | "get_weekly_digest" | "find_free_time" | "get_weather" | "send_to_alice" | "save_progress" | "send_email" | "chat",
       "task_type": "short" | "long" | null,
       "title": "название без дат/времени" | null,
       "date": "YYYY-MM-DD" | null,
@@ -118,6 +118,9 @@ def parse_message(
 - send_email: хочет отправить письмо/сообщение по email — сгенерируй тему и текст письма
 - show_tasks: показать список задач
 - get_digest: дайджест или план на день
+- get_weekly_digest: план на неделю, что на этой неделе, недельный обзор
+- reschedule_task: перенеси/измени время задачи или события — найди task_number по смыслу; новые дата/время в date и time
+- find_free_time: найди свободное время, когда я свободна/свободен — заполни date и duration_minutes
 - get_weather: узнать погоду — заполни "title" названием города (если не указан — null, используем Нешер)
 - send_to_alice: отправить/передать сообщение Алисе чтобы она прочитала вслух — текст сообщения в "reply"
 - save_progress: итоги дня, прогресс
