@@ -8,9 +8,11 @@ import requests
 logger = logging.getLogger(__name__)
 
 NEWS_FEEDS = {
-    "Кан 11": "https://rss.kan.org.il/Rss/RssKan.aspx?id=28",
-    "Кешет 12": "https://www.mako.co.il/rss/news.xml",
-    "Дождь": "https://tvrain.ru/lite/rss/",
+    # Кан 11 блокирует все RSS-запросы → заменён на Ynet (ведущий израильский портал)
+    "Кан 11 / Ynet": "https://www.ynet.co.il/Integration/StoryRss2.xml",
+    # Кешет 12 блокирует прямой RSS → заменён на Walla News
+    "Кешет 12 / Walla": "https://rss.walla.co.il/feed/1",
+    "Дождь": "https://tvrain.ru/export/rss/all.xml",
 }
 
 
@@ -19,7 +21,7 @@ def get_news_headlines(max_per_source: int = 3) -> list[dict]:
     headlines = []
     for source, url in NEWS_FEEDS.items():
         try:
-            resp = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+            resp = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"}, verify=False)
             resp.raise_for_status()
             root = ET.fromstring(resp.content)
             for item in root.findall(".//item")[:max_per_source]:
