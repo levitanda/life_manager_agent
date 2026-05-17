@@ -23,6 +23,7 @@ import calendar_client
 import config
 import contacts_client
 import conversation
+import weather_client
 import digest as digest_module
 import gmail_client
 import parser
@@ -440,8 +441,9 @@ async def _send_morning_digest(app: Application, target_date: datetime.date | No
             long_ = calendar_client.get_active_tasks("long", target_date)
             yesterday = calendar_client.get_progress_before_date(target_date)
             emails = gmail_client.get_unread_emails() if target_date is None else []
+            weather = weather_client.get_weather(target_date)
 
-            text = digest_module.generate_morning_digest(events, short, long_, yesterday, emails, target_date)
+            text = digest_module.generate_morning_digest(events, short, long_, yesterday, emails, target_date, weather)
 
             with open(config.ALICE_DIGEST_FILE, "w", encoding="utf-8") as f:
                 f.write(text)

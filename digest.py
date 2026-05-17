@@ -52,6 +52,7 @@ def generate_morning_digest(
     yesterday_progress: Optional[str],
     emails: Optional[list[dict]] = None,
     target_date: Optional[datetime.date] = None,
+    weather: Optional[str] = None,
 ) -> str:
     tz = pytz.timezone(config.TIMEZONE)
     ref_dt = (
@@ -68,6 +69,8 @@ def generate_morning_digest(
     if emails is not None:
         emails_section = f"\nНЕПРОЧИТАННЫЕ ПИСЬМА (последние 2 дня):\n{_format_emails(emails)}\n"
 
+    weather_section = f"\nПОГОДА В НЕШЕРЕ: {weather}\n" if weather else ""
+
     prompt = f"""Ты личный ИИ-ассистент. Составь утренний дайджест на русском языке для {date_str}.
 
 СОБЫТИЯ В КАЛЕНДАРЕ:
@@ -81,9 +84,9 @@ def generate_morning_digest(
 
 ПРОГРЕСС ЗА ВЧЕРА:
 {yesterday_progress or "Нет данных."}
-{emails_section}
+{weather_section}{emails_section}
 Напиши дружелюбный, мотивирующий дайджест. Структура:
-1. Приветствие с датой
+1. Приветствие с датой и погодой (если есть)
 2. Что сегодня в расписании
 3. На чём сосредоточиться из задач (приоритеты)
 4. Важные письма — только если есть что-то требующее ответа или действия (1-3 письма максимум, остальные игнорируй)
