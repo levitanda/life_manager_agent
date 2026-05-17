@@ -2,6 +2,7 @@
 
 import datetime
 import logging
+import tempfile
 
 import pytz
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -15,6 +16,8 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
+
+import openai
 
 import calendar_client
 import config
@@ -407,6 +410,37 @@ async def _send_morning_digest(app: Application) -> None:
     )
 
 
+async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_owner(update):
+        return
+
+    if not config.OPENAI_API_KEY:
+        await update.message.reply_text("Голосовые сообщения не настроены (нет OPENAI_API_KEY).")
+        return
+
+    voice = update.message.voice
+    tg_file = await context.bot.get_file(voice.file_id)
+
+    with tempfile.NamedTemporaryFile(suffix=".ogg", delete=True) as tmp:
+        await tg_file.download_to_drive(tmp.name)
+        client = openai.OpenAI(api_key=config.OPENAI_API_KEY)
+        with open(tmp.name, "rb") as audio:
+            transcript = client.audio.transcriptions.create(
+                model="whisper-1",
+                file=audio,
+                language="ru",
+            )
+
+    text = transcript.text.strip()
+    if not text:
+        await update.message.reply_text("Не удалось распознать голосовое сообщение.")
+        return
+
+    await update.message.reply_text(f"🎙 Распознано: {text}")
+    update.message.text = text
+    await handle_natural(update, context)
+
+
 async def _send_evening_checkin(app: Application) -> None:
     try:
         text = digest_module.generate_evening_checkin()
@@ -431,5 +465,6 @@ def register_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("digest", cmd_digest))
     app.add_handler(progress_conv)
     app.add_handler(CallbackQueryHandler(callback_email, pattern="^email_"))
+    app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     # natural language — lowest priority, catches everything else
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_natural))

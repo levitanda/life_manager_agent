@@ -7,6 +7,7 @@ TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 TELEGRAM_CHAT_ID = int(os.environ["TELEGRAM_CHAT_ID"])
 
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 
 PUSHOVER_USER_KEY = os.environ.get("PUSHOVER_USER_KEY", "")
 PUSHOVER_APP_TOKEN = os.environ.get("PUSHOVER_APP_TOKEN", "")
