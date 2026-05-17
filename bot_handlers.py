@@ -236,9 +236,10 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def handle_natural(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_owner(update):
         return
+    await _process_natural(update.message.text, update, context)
 
-    text = update.message.text
 
+async def _process_natural(text: str, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # Handle "waiting for email address" state
     if context.user_data.get("waiting_for") == "email":
         context.user_data["pending_email"]["to_email"] = text.strip()
@@ -436,9 +437,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.message.reply_text("Не удалось распознать голосовое сообщение.")
         return
 
-    await update.message.reply_text(f"🎙 Распознано: {text}")
-    update.message.text = text
-    await handle_natural(update, context)
+    await _process_natural(text, update, context)
 
 
 async def _send_evening_checkin(app: Application) -> None:
