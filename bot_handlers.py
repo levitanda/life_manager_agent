@@ -356,6 +356,15 @@ async def _execute_action(
         await update.message.reply_text(response_text)
         return response_text
 
+    elif intent == "get_weather":
+        city = action.get("title") or None
+        date_str = action.get("date")
+        target_date = datetime.date.fromisoformat(date_str) if date_str else None
+        result = weather_client.get_weather(target_date, city)
+        response_text = f"🌤 {result}" if result else "Не удалось получить погоду."
+        await update.message.reply_text(response_text)
+        return response_text
+
     elif intent == "show_tasks":
         await cmd_tasks(update, context)
         return "[список задач]"

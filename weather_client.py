@@ -1,4 +1,4 @@
-"""Fetch daily weather for Nesher via Open-Meteo (no API key required)."""
+"""Fetch daily weather via Open-Meteo (no API key required)."""
 
 import datetime
 import logging
@@ -8,15 +8,23 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-_URL = "https://api.open-meteo.com/v1/forecast"
-_PARAMS = {
-    "latitude": 32.77,
-    "longitude": 35.05,
-    "daily": "temperature_2m_max,temperature_2m_min,precipitation_probability_max,weathercode",
-    "current_weather": True,
-    "timezone": "Asia/Jerusalem",
-    "forecast_days": 1,
-}
+_FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
+_GEO_URL = "https://geocoding-api.open-meteo.com/v1/search"
+
+_DEFAULT_LAT = 32.77  # Nesher
+_DEFAULT_LON = 35.05
+
+def _geocode(city: str) -> tuple[float, float] | None:
+    try:
+        r = requests.get(_GEO_URL, params={"name": city, "count": 1, "language": "ru"}, timeout=5)
+        r.raise_for_status()
+        results = r.json().get("results")
+        if results:
+            return results[0]["latitude"], results[0]["longitude"]
+    except Exception as e:
+        logger.warning("Geocode failed for %r: %s", city, e)
+    return None
+
 
 _WMO = {
     0: "ясно", 1: "преимущественно ясно", 2: "переменная облачность", 3: "пасмурно",
@@ -29,16 +37,32 @@ _WMO = {
 }
 
 
-def get_weather(target_date: Optional[datetime.date] = None) -> Optional[str]:
-    """Return a one-line weather summary for Nesher on target_date (default: today)."""
+def get_weather(target_date: Optional[datetime.date] = None, city: Optional[str] = None) -> Optional[str]:
+    """Return a one-line weather summary. city defaults to Nesher."""
     try:
-        params = dict(_PARAMS)
+        if city:
+            coords = _geocode(city)
+            if not coords:
+                return f"Не удалось найти город «{city}»"
+            lat, lon = coords
+        else:
+            lat, lon = _DEFAULT_LAT, _DEFAULT_LON
+            city = "Нешер"
+
+        params = {
+            "latitude": lat,
+            "longitude": lon,
+            "daily": "temperature_2m_max,temperature_2m_min,precipitation_probability_max,weathercode",
+            "timezone": "auto",
+            "forecast_days": 1,
+        }
         if target_date:
             params["start_date"] = target_date.isoformat()
             params["end_date"] = target_date.isoformat()
-            params.pop("current_weather", None)
+        else:
+            params["current_weather"] = True
 
-        r = requests.get(_URL, params=params, timeout=10)
+        r = requests.get(_FORECAST_URL, params=params, timeout=10)
         r.raise_for_status()
         data = r.json()
 
@@ -49,7 +73,7 @@ def get_weather(target_date: Optional[datetime.date] = None) -> Optional[str]:
         code = daily.get("weathercode", [None])[0]
         condition = _WMO.get(code, "неизвестно")
 
-        parts = [f"{condition.capitalize()}"]
+        parts = [f"{city}: {condition}"]
         if t_min is not None and t_max is not None:
             parts.append(f"{t_min:.0f}…{t_max:.0f}°C")
         if precip is not None and precip > 20:
