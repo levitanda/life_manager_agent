@@ -54,13 +54,12 @@ def get_weather(target_date: Optional[datetime.date] = None, city: Optional[str]
             "longitude": lon,
             "daily": "temperature_2m_max,temperature_2m_min,precipitation_probability_max,weathercode",
             "timezone": "auto",
-            "forecast_days": 1,
         }
         if target_date:
             params["start_date"] = target_date.isoformat()
             params["end_date"] = target_date.isoformat()
         else:
-            params["current_weather"] = True
+            params["forecast_days"] = 1
 
         r = requests.get(_FORECAST_URL, params=params, timeout=10)
         r.raise_for_status()
