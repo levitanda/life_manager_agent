@@ -87,22 +87,26 @@ def parse_message(
 
 {history_block}{tasks_block}Новое сообщение пользователя: «{text}»
 
-Определи намерение и верни JSON:
+Пользователь может попросить сделать НЕСКОЛЬКО вещей в одном сообщении. Верни JSON со списком всех действий:
 {{
-  "intent": "add_task" | "complete_task" | "delete_task" | "show_tasks" | "get_digest" | "save_progress" | "send_email" | "chat",
-  "task_type": "short" | "long" | null,
-  "title": "название без дат/времени" | null,
-  "date": "YYYY-MM-DD" | null,
-  "end_date": "YYYY-MM-DD" | null,
-  "time": "HH:MM" | null,
-  "duration_minutes": число (по умолчанию 60),
-  "task_number": номер_из_списка_или_null,
-  "to_email": "email@example.com или null",
-  "to_name": "имя получателя или null",
-  "email_subject": "тема письма или null",
-  "email_body": "текст письма или null",
-  "attendees": ["Имя1", "Имя2"] или null,
-  "reply": "короткий ответ если intent=chat" | null
+  "actions": [
+    {{
+      "intent": "add_task" | "complete_task" | "delete_task" | "show_tasks" | "get_digest" | "save_progress" | "send_email" | "chat",
+      "task_type": "short" | "long" | null,
+      "title": "название без дат/времени" | null,
+      "date": "YYYY-MM-DD" | null,
+      "end_date": "YYYY-MM-DD" | null,
+      "time": "HH:MM" | null,
+      "duration_minutes": число (по умолчанию 60),
+      "task_number": номер_из_списка_или_null,
+      "to_email": "email@example.com или null",
+      "to_name": "имя получателя или null",
+      "email_subject": "тема письма или null",
+      "email_body": "текст письма или null",
+      "attendees": ["Имя1", "Имя2"] или null,
+      "reply": "короткий ответ если intent=chat" | null
+    }}
+  ]
 }}
 
 Правила intent:
@@ -115,7 +119,8 @@ def parse_message(
 - show_tasks: показать список задач
 - get_digest: дайджест или план на день
 - save_progress: итоги дня, прогресс
-- chat: всё остальное, используй историю для контекста"""
+- chat: всё остальное, используй историю для контекста
+Если одно действие — всё равно верни список из одного элемента."""
 
     try:
         return _call(prompt)

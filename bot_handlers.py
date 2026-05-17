@@ -255,16 +255,38 @@ async def _process_natural(text: str, update: Update, context: ContextTypes.DEFA
     history = conversation.get_history()
     summaries = conversation.get_recent_summaries()
     parsed = parser.parse_message(text, all_tasks, history, summaries)
-    intent = parsed.get("intent")
-    response_text = None
+
+    # Support both {"actions": [...]} (new) and {"intent": ...} (fallback)
+    actions = parsed.get("actions")
+    if not isinstance(actions, list) or not actions:
+        actions = [parsed]
+
+    response_parts = []
+    for action in actions:
+        resp = await _execute_action(action, all_tasks, text, update, context)
+        if resp:
+            response_parts.append(resp)
+
+    if response_parts:
+        conversation.add(text, "\n\n".join(response_parts))
+
+
+async def _execute_action(
+    action: dict,
+    all_tasks: list,
+    original_text: str,
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> str | None:
+    intent = action.get("intent")
 
     if intent == "add_task":
-        task_type = parsed.get("task_type") or "short"
-        title = parsed.get("title") or text
-        time_str = parsed.get("time")
-        date_str = parsed.get("date")
-        end_date_str = parsed.get("end_date")
-        duration_minutes = int(parsed.get("duration_minutes") or 60)
+        task_type = action.get("task_type") or "short"
+        title = action.get("title") or original_text
+        time_str = action.get("time")
+        date_str = action.get("date")
+        end_date_str = action.get("end_date")
+        duration_minutes = int(action.get("duration_minutes") or 60)
 
         tz = pytz.timezone(config.TIMEZONE)
         start_dt = None
@@ -281,15 +303,11 @@ async def _process_natural(text: str, update: Update, context: ContextTypes.DEFA
             if end_date_str:
                 end_date = datetime.date.fromisoformat(end_date_str)
 
-        attendee_names = parsed.get("attendees") or []
-        attendee_emails = []
-        not_found = []
+        attendee_names = action.get("attendees") or []
+        attendee_emails, not_found = [], []
         for name in attendee_names:
             email = contacts_client.find_contact_email(name)
-            if email:
-                attendee_emails.append(email)
-            else:
-                not_found.append(name)
+            (attendee_emails if email else not_found).append(email or name)
 
         try:
             calendar_client.add_task(title, task_type, due_date=due_date, end_date=end_date,
@@ -313,10 +331,10 @@ async def _process_natural(text: str, update: Update, context: ContextTypes.DEFA
             logger.error("natural add_task failed: %s", e)
             response_text = "Не смог добавить задачу, попробуй ещё раз."
         await update.message.reply_text(response_text)
+        return response_text
 
     elif intent in ("complete_task", "delete_task"):
-        raw_num = parsed.get("task_number")
-        # parser sometimes returns a list or string — normalise to int
+        raw_num = action.get("task_number")
         if isinstance(raw_num, list):
             raw_num = raw_num[0] if raw_num else None
         try:
@@ -335,46 +353,47 @@ async def _process_natural(text: str, update: Update, context: ContextTypes.DEFA
         else:
             response_text = "Не нашёл такую задачу. Напиши /tasks чтобы увидеть список с номерами."
         await update.message.reply_text(response_text)
+        return response_text
 
     elif intent == "show_tasks":
         await cmd_tasks(update, context)
-        response_text = "[список задач]"
+        return "[список задач]"
 
     elif intent == "get_digest":
-        date_str = parsed.get("date")
+        date_str = action.get("date")
         target_date = datetime.date.fromisoformat(date_str) if date_str else None
         label = date_str or "сегодня"
         await update.message.reply_text(f"⏳ Генерирую дайджест на {label}...")
         await _send_morning_digest(context.application, target_date)
-        response_text = "[дайджест отправлен]"
+        return "[дайджест отправлен]"
 
     elif intent == "save_progress":
-        calendar_client.save_progress(text)
+        calendar_client.save_progress(original_text)
         response_text = "✍️ Прогресс сохранён. Учту завтра утром!"
         await update.message.reply_text(response_text)
+        return response_text
 
     elif intent == "send_email":
         context.user_data["pending_email"] = {
-            "to_email": parsed.get("to_email"),
-            "to_name": parsed.get("to_name"),
-            "subject": parsed.get("email_subject") or "Без темы",
-            "body": parsed.get("email_body") or "",
+            "to_email": action.get("to_email"),
+            "to_name": action.get("to_name"),
+            "subject": action.get("email_subject") or "Без темы",
+            "body": action.get("email_body") or "",
         }
         if not context.user_data["pending_email"]["to_email"]:
-            name = parsed.get("to_name") or "получателя"
+            name = action.get("to_name") or "получателя"
             context.user_data["waiting_for"] = "email"
             response_text = f"На какой email отправить письмо для {name}?"
             await update.message.reply_text(response_text)
         else:
             await _show_email_preview(update, context)
             response_text = "[показан предпросмотр письма]"
+        return response_text
 
     else:  # chat
-        response_text = parsed.get("reply") or "Понял! Чем ещё могу помочь?"
+        response_text = action.get("reply") or "Понял! Чем ещё могу помочь?"
         await update.message.reply_text(response_text)
-
-    if response_text:
-        conversation.add(text, response_text)
+        return response_text
 
 
 async def _show_email_preview(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
