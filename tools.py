@@ -344,6 +344,55 @@ def smart_home_set_mode(*, device_name: str, mode: str, **_kwargs) -> dict:
     return _ok(f"⚙️ {msg}") if ok else _err(msg)
 
 
+# ─── record_completed_task (retroactive logging) ─────────────────────────────
+
+def record_completed_task(
+    *,
+    title: str,
+    duration_minutes: int = 30,
+    **_kwargs,
+) -> dict:
+    """Log a task that was done today but wasn't in the plan.
+
+    Finds a past free slot today and creates the task already marked as done.
+    Falls back to placing it `duration_minutes` before now if no past gap exists.
+    """
+    tz = pytz.timezone(config.TIMEZONE)
+    now = datetime.datetime.now(tz)
+    today = now.date()
+
+    # Search for free slots throughout the active day
+    try:
+        slots = calendar_client.find_free_slots(today, duration_minutes, "07:00", "23:00")
+    except Exception:
+        slots = []
+
+    # Pick the latest slot whose end is already in the past
+    placement_dt = None
+    for slot in slots:
+        eh, em = map(int, slot["end"].split(":"))
+        slot_end = tz.localize(datetime.datetime(today.year, today.month, today.day, eh, em))
+        if slot_end <= now:
+            sh, sm = map(int, slot["start"].split(":"))
+            placement_dt = tz.localize(datetime.datetime(today.year, today.month, today.day, sh, sm))
+            # don't break — keep walking to find the LATEST past slot
+
+    # Fallback: place ending right before now
+    if placement_dt is None:
+        placement_dt = now - datetime.timedelta(minutes=duration_minutes)
+
+    try:
+        calendar_client.record_completed_task(title, placement_dt, duration_minutes)
+        end = placement_dt + datetime.timedelta(minutes=duration_minutes)
+        return _ok(
+            f"✅ Записала задним числом: «{title}»\n"
+            f"📅 {placement_dt.strftime('%H:%M')}–{end.strftime('%H:%M')} — отмечено выполненным"
+        )
+    except Exception as e:
+        logger.error("record_completed_task failed: %s", e)
+        return _err(f"Не удалось записать: {e}")
+
+
 # ─── Scheduled actions (delayed / recurring flows) ───────────────────────────
 
 def schedule_action(
@@ -598,6 +647,25 @@ TOOL_SCHEMAS = [
         },
     },
     {
+        "name": "record_completed_task",
+        "description": (
+            "Log an unplanned task that the user already completed today. Use this "
+            "when the user reports doing something that was NOT in their active "
+            "task list (e.g., 'я сегодня помыла окна', 'позвонила маме'). "
+            "Call this ONCE per individual completed item. The task is placed in "
+            "a past free slot today and marked done immediately — perfect for "
+            "history tracking and weekly review."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Что было сделано — короткая формулировка."},
+                "duration_minutes": {"type": "integer", "default": 30},
+            },
+            "required": ["title"],
+        },
+    },
+    {
         "name": "schedule_action",
         "description": (
             "Schedule a natural-language action to execute later. The action_text "
@@ -675,6 +743,7 @@ TOOL_FUNCS = {
     "smart_home_set_color_temp": smart_home_set_color_temp,
     "smart_home_set_fan_speed": smart_home_set_fan_speed,
     "smart_home_set_mode": smart_home_set_mode,
+    "record_completed_task": record_completed_task,
     "schedule_action": schedule_action,
     "list_scheduled_actions": list_scheduled_actions,
     "cancel_scheduled_action": cancel_scheduled_action,

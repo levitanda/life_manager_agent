@@ -224,6 +224,32 @@ def get_todays_calendar_events(target_date: Optional[datetime.date] = None) -> l
     return events
 
 
+def record_completed_task(
+    title: str,
+    start_dt: datetime.datetime,
+    duration_minutes: int = 30,
+    task_type: str = "short",
+) -> str:
+    """Create a timed event already marked as done (for retroactive logging)."""
+    tz = pytz.timezone(config.TIMEZONE)
+    if start_dt.tzinfo is None:
+        start_dt = tz.localize(start_dt)
+    end_dt = start_dt + datetime.timedelta(minutes=duration_minutes)
+    cal_name = config.SHORT_TASK_CALENDAR if task_type == "short" else config.LONG_TASK_CALENDAR
+    cal_id = _get_or_create_calendar(cal_name)
+    event = {
+        "summary": title,
+        "start": {"dateTime": start_dt.isoformat(), "timeZone": config.TIMEZONE},
+        "end": {"dateTime": end_dt.isoformat(), "timeZone": config.TIMEZONE},
+        "extendedProperties": {"private": {
+            "agent_task": "true", "task_type": task_type, "status": "done",
+            "retroactive": "true",
+        }},
+    }
+    result = _get_service().events().insert(calendarId=cal_id, body=event).execute()
+    return result["id"]
+
+
 def reschedule_task(
     task_id: str,
     cal_id: str,
