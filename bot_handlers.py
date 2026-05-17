@@ -21,6 +21,7 @@ import openai
 
 import asyncio
 
+import agent
 import calendar_client
 import config
 import contacts_client
@@ -259,9 +260,20 @@ async def _process_natural(text: str, update: Update, context: ContextTypes.DEFA
 
     history = conversation.get_history()
     summaries = conversation.get_recent_summaries()
-    parsed = parser.parse_message(text, all_tasks, history, summaries)
 
-    # Support both {"actions": [...]} (new) and {"intent": ...} (fallback)
+    # New agent path (feature-flagged via USE_AGENT env var)
+    if agent.is_enabled():
+        try:
+            result = agent.run_agent(text, history, summaries, all_tasks, context)
+            await _handle_agent_result(result, update, context)
+            if result.get("text"):
+                conversation.add(text, result["text"])
+            return
+        except Exception as e:
+            logger.exception("agent failed, falling back to legacy parser: %s", e)
+
+    # Legacy parser path
+    parsed = parser.parse_message(text, all_tasks, history, summaries)
     actions = parsed.get("actions")
     if not isinstance(actions, list) or not actions:
         actions = [parsed]
@@ -274,6 +286,53 @@ async def _process_natural(text: str, update: Update, context: ContextTypes.DEFA
 
     if response_parts:
         conversation.add(text, "\n\n".join(response_parts))
+
+
+async def _handle_agent_result(result: dict, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Render agent.run_agent output: send text, then execute any side-effect actions."""
+    text_out = result.get("text", "").strip()
+    actions = result.get("actions", []) or []
+
+    needs_confirmation = next((a for a in actions if a.get("action") == "needs_confirmation"), None)
+
+    # Send the textual summary first (split if long)
+    if text_out:
+        if needs_confirmation and needs_confirmation.get("kind") == "conflict_task":
+            keyboard = InlineKeyboardMarkup([[
+                InlineKeyboardButton("✅ Добавить всё равно", callback_data="conflict_confirm"),
+                InlineKeyboardButton("❌ Отменить", callback_data="conflict_cancel"),
+            ]])
+            await update.message.reply_text(text_out, reply_markup=keyboard)
+        elif needs_confirmation and needs_confirmation.get("kind") == "email_preview":
+            await _show_email_preview(update, context)
+        else:
+            await _reply_split(update, text_out)
+
+    # Dispatch background actions (digests)
+    for act in actions:
+        kind = act.get("action")
+        if kind == "send_digest":
+            target_date = None
+            if act.get("target_date"):
+                try:
+                    target_date = datetime.date.fromisoformat(act["target_date"])
+                except Exception:
+                    pass
+            await _send_morning_digest(context.application, target_date)
+        elif kind == "send_weekly_digest":
+            tz = pytz.timezone(config.TIMEZONE)
+            today = datetime.datetime.now(tz).date()
+            monday = today - datetime.timedelta(days=today.weekday())
+            sunday = monday + datetime.timedelta(days=6)
+            try:
+                week_events = calendar_client.get_week_events(monday, sunday)
+                short_ = calendar_client.get_active_tasks("short")
+                long__ = calendar_client.get_active_tasks("long")
+                weekly_text = digest_module.generate_weekly_digest(week_events, short_, long__)
+            except Exception as e:
+                logger.error("weekly digest action failed: %s", e)
+                weekly_text = "Не удалось создать недельный обзор."
+            await _reply_split(update, weekly_text)
 
 
 async def _execute_action(
