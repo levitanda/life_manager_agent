@@ -1,0 +1,22 @@
+# Secrets — never commit these
+.env
+google_credentials.json
+google_token.json
+*.pem
+
+# Runtime state — stays on server only
+conversation_history.json
+session_summaries.jsonl
+last_digest.txt
+
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Logs
+*.log
+bot.log

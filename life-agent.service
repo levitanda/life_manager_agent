@@ -1,0 +1,17 @@
+[Unit]
+Description=Life Manager Agent (Telegram bot)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/life-agent
+ExecStart=/home/ubuntu/life-agent/venv/bin/python3 main.py
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
