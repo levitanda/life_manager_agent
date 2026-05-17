@@ -21,6 +21,16 @@ def _load_digest() -> str:
     return "Дайджест на сегодня ещё не готов. Он появится в 6:30 утра."
 
 
+def _pop_pending_message() -> str | None:
+    """Return and delete the pending message if one exists."""
+    if os.path.exists(config.ALICE_MESSAGE_FILE):
+        with open(config.ALICE_MESSAGE_FILE, encoding="utf-8") as f:
+            msg = f.read().strip()
+        os.remove(config.ALICE_MESSAGE_FILE)
+        return msg or None
+    return None
+
+
 def _clean_for_tts(text: str) -> str:
     """Strip markdown so Alice reads clean text."""
     text = re.sub(r"\*{1,2}(.+?)\*{1,2}", r"\1", text)  # bold / italic
@@ -62,6 +72,12 @@ def alice():
     session = body.get("session", {})
     state = body.get("state", {}).get("session", {})
     command = body.get("request", {}).get("command", "").lower().strip()
+
+    # If there's a queued message, read it and close the session
+    if session.get("new"):
+        pending = _pop_pending_message()
+        if pending:
+            return jsonify(_make_response(_clean_for_tts(pending), session, end=True))
 
     digest = _clean_for_tts(_load_digest())
     chunks = _split_chunks(digest)

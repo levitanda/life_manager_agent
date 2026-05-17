@@ -356,6 +356,17 @@ async def _execute_action(
         await update.message.reply_text(response_text)
         return response_text
 
+    elif intent == "send_to_alice":
+        message = action.get("reply") or action.get("title") or ""
+        if message:
+            with open(config.ALICE_MESSAGE_FILE, "w", encoding="utf-8") as f:
+                f.write(message)
+            response_text = f"📢 Сообщение поставлено в очередь. Скажи «Алиса, открой [название навыка]» — она прочитает его вслух."
+        else:
+            response_text = "Не понял что передать Алисе, уточни текст."
+        await update.message.reply_text(response_text)
+        return response_text
+
     elif intent == "get_weather":
         city = action.get("title") or None
         date_str = action.get("date")

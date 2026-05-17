@@ -18,6 +18,7 @@ EVENING_TIME = os.environ.get("EVENING_TIME", "21:30")
 
 ALICE_PORT = int(os.environ.get("ALICE_PORT", "5000"))
 ALICE_DIGEST_FILE = "last_digest.txt"
+ALICE_MESSAGE_FILE = "pending_alice_message.txt"
 
 GOOGLE_CREDENTIALS_FILE = "google_credentials.json"
 GOOGLE_TOKEN_FILE = "google_token.json"
