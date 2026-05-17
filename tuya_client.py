@@ -57,14 +57,23 @@ def _fetch_devices() -> list[dict]:
     if not cloud:
         return []
     try:
-        devs = cloud.getdevices()
-        if isinstance(devs, dict) and "Error" in devs:
-            logger.warning("Tuya getdevices error: %s", devs)
+        # New Smart Home Basic Service endpoint (the old /v1.0/devices/{uid} is deprecated)
+        resp = cloud.cloudrequest("/v1.0/iot-01/associated-users/devices")
+        if not isinstance(resp, dict) or not resp.get("success"):
+            logger.warning("Tuya cloudrequest failed: %s", resp)
             return []
-        _devices_cache = devs or []
+        result = resp.get("result")
+        # Endpoint can return either a list or a dict with 'devices'
+        if isinstance(result, dict):
+            devs = result.get("devices", result.get("list", []))
+        elif isinstance(result, list):
+            devs = result
+        else:
+            devs = []
+        _devices_cache = devs
         return _devices_cache
     except Exception as e:
-        logger.warning("Tuya getdevices failed: %s", e)
+        logger.warning("Tuya fetch failed: %s", e)
         return []
 
 
@@ -77,23 +86,19 @@ def list_devices() -> list[dict]:
     """Return list of {name, type, state, id} for all Tuya devices."""
     devs = _fetch_devices()
     result = []
-    cloud = _get_cloud()
     for d in devs:
         name = d.get("name", "")
         dev_id = d.get("id", "")
         category = d.get("category", "")
-        # Try to get current state
+        online = d.get("online", False)
         state = "?"
-        if cloud:
-            try:
-                status = cloud.getstatus(dev_id)
-                if isinstance(status, dict) and "result" in status:
-                    for s in status["result"]:
-                        if s.get("code") in ("switch_led", "switch_1", "switch"):
-                            state = "on" if s.get("value") else "off"
-                            break
-            except Exception:
-                pass
+        # Status is embedded in the device record from the new endpoint
+        for s in d.get("status", []):
+            if s.get("code") in ("switch_led", "switch_1", "switch"):
+                state = "on" if s.get("value") else "off"
+                break
+        if not online:
+            state = "offline"
         result.append({
             "name": name,
             "type": category,
