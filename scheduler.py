@@ -10,6 +10,7 @@ from telegram.ext import Application
 import bot_handlers
 import config
 import conversation
+import scheduled_actions
 
 logger = logging.getLogger(__name__)
 
@@ -65,5 +66,9 @@ def setup_scheduler(app: Application) -> AsyncIOScheduler:
         replace_existing=True,
     )
     logger.info("Scheduled daily summary at 23:30 %s", config.TIMEZONE)
+
+    restored = scheduled_actions.init(scheduler, app)
+    if restored:
+        logger.info("Restored %d scheduled actions from disk", restored)
 
     return scheduler

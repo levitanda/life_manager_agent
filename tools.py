@@ -19,6 +19,7 @@ import pytz
 import calendar_client
 import config
 import contacts_client
+import scheduled_actions
 import smart_home
 import weather_client
 
@@ -343,6 +344,72 @@ def smart_home_set_mode(*, device_name: str, mode: str, **_kwargs) -> dict:
     return _ok(f"⚙️ {msg}") if ok else _err(msg)
 
 
+# ─── Scheduled actions (delayed / recurring flows) ───────────────────────────
+
+def schedule_action(
+    *,
+    action_text: str,
+    delay_minutes: Optional[int] = None,
+    at_time: Optional[str] = None,
+    at_date: Optional[str] = None,
+    repeat: Optional[str] = None,
+    **_kwargs,
+) -> dict:
+    """Schedule a natural-language action to fire later or repeat.
+
+    Examples:
+      action_text='включи лампу в зале', delay_minutes=2
+      action_text='выключи бойлер', at_time='23:00'
+      action_text='включи увлажнитель на ночь', at_time='22:00', repeat='daily'
+    """
+    tz = pytz.timezone(config.TIMEZONE)
+    now = datetime.datetime.now(tz)
+
+    if delay_minutes:
+        run_at = now + datetime.timedelta(minutes=delay_minutes)
+    elif at_time:
+        h, m = map(int, at_time.split(":"))
+        base_date = datetime.date.fromisoformat(at_date) if at_date else now.date()
+        run_at = tz.localize(datetime.datetime(base_date.year, base_date.month, base_date.day, h, m))
+        # If time has passed today and no date specified and not repeating — push to tomorrow
+        if run_at <= now and not at_date and not repeat:
+            run_at += datetime.timedelta(days=1)
+    else:
+        return _err("Уточни когда — через сколько минут или в какое время.")
+
+    action = scheduled_actions.schedule_action(action_text, run_at, repeat=repeat)
+
+    if repeat == "daily":
+        return _ok(f"⏰ Каждый день в {action['at_time']} буду делать: «{action_text}»")
+    if repeat == "weekdays":
+        return _ok(f"⏰ По будням в {action['at_time']} буду делать: «{action_text}»")
+    if repeat == "weekend":
+        return _ok(f"⏰ По выходным в {action['at_time']} буду делать: «{action_text}»")
+    return _ok(f"⏰ Запланировано на {run_at.strftime('%d.%m в %H:%M')}: «{action_text}»")
+
+
+def list_scheduled_actions(**_kwargs) -> dict:
+    actions = scheduled_actions.list_actions()
+    if not actions:
+        return _ok("Запланированных действий нет.")
+    tz = pytz.timezone(config.TIMEZONE)
+    lines = ["⏰ *Запланированные действия:*"]
+    for a in actions:
+        run_at = datetime.datetime.fromisoformat(a["run_at"])
+        if a.get("repeat"):
+            when = f"каждый {a['repeat']} в {a['at_time']}"
+        else:
+            when = run_at.strftime("%d.%m в %H:%M")
+        lines.append(f"  `{a['id']}` — «{a['action_text']}» → {when}")
+    return _ok("\n".join(lines))
+
+
+def cancel_scheduled_action(*, action_id: str, **_kwargs) -> dict:
+    if scheduled_actions.cancel_action(action_id):
+        return _ok(f"❌ Отменено: {action_id}")
+    return _err(f"Не нашёл запланированное действие с id `{action_id}`.")
+
+
 # ─── Tool schema definitions for Anthropic API ───────────────────────────────
 
 TOOL_SCHEMAS = [
@@ -531,6 +598,44 @@ TOOL_SCHEMAS = [
         },
     },
     {
+        "name": "schedule_action",
+        "description": (
+            "Schedule a natural-language action to execute later. The action_text "
+            "is exactly what the user would say (e.g., 'включи лампу в зале'). "
+            "Use this for ANY delayed or recurring request: smart home, reminders, "
+            "task additions, weather checks, anything. Specify ONE of: "
+            "delay_minutes (fire after N minutes), or at_time (HH:MM today, "
+            "automatically tomorrow if time has passed). Optionally combine at_time "
+            "with at_date (YYYY-MM-DD) for specific dates. Use repeat='daily' / "
+            "'weekdays' / 'weekend' for recurring schedules — they always need at_time."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action_text": {"type": "string", "description": "The action to execute, in natural language."},
+                "delay_minutes": {"type": "integer", "description": "Fire after this many minutes from now."},
+                "at_time": {"type": "string", "description": "HH:MM time to fire at."},
+                "at_date": {"type": "string", "description": "YYYY-MM-DD date (combined with at_time)."},
+                "repeat": {"type": "string", "enum": ["daily", "weekdays", "weekend"]},
+            },
+            "required": ["action_text"],
+        },
+    },
+    {
+        "name": "list_scheduled_actions",
+        "description": "Show all currently scheduled and recurring actions.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "cancel_scheduled_action",
+        "description": "Cancel a scheduled action by its short id (from list_scheduled_actions).",
+        "input_schema": {
+            "type": "object",
+            "properties": {"action_id": {"type": "string"}},
+            "required": ["action_id"],
+        },
+    },
+    {
         "name": "send_email",
         "description": (
             "Compose and prepare to send an email via Gmail. If to_email is missing, "
@@ -570,4 +675,7 @@ TOOL_FUNCS = {
     "smart_home_set_color_temp": smart_home_set_color_temp,
     "smart_home_set_fan_speed": smart_home_set_fan_speed,
     "smart_home_set_mode": smart_home_set_mode,
+    "schedule_action": schedule_action,
+    "list_scheduled_actions": list_scheduled_actions,
+    "cancel_scheduled_action": cancel_scheduled_action,
 }
