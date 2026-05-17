@@ -161,6 +161,11 @@ def get_active_tasks(task_type: str, target_date: Optional[datetime.date] = None
     return tasks
 
 
+def delete_task(task_id: str, cal_id: str) -> bool:
+    _get_service().events().delete(calendarId=cal_id, eventId=task_id).execute()
+    return True
+
+
 def complete_task(task_id: str, cal_id: str) -> bool:
     svc = _get_service()
     event = svc.events().get(calendarId=cal_id, eventId=task_id).execute()

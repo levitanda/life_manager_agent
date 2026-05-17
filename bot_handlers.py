@@ -314,12 +314,24 @@ async def _process_natural(text: str, update: Update, context: ContextTypes.DEFA
             response_text = "Не смог добавить задачу, попробуй ещё раз."
         await update.message.reply_text(response_text)
 
-    elif intent == "complete_task":
-        task_number = parsed.get("task_number")
+    elif intent in ("complete_task", "delete_task"):
+        raw_num = parsed.get("task_number")
+        # parser sometimes returns a list or string — normalise to int
+        if isinstance(raw_num, list):
+            raw_num = raw_num[0] if raw_num else None
+        try:
+            task_number = int(raw_num) if raw_num is not None else None
+        except (ValueError, TypeError):
+            task_number = None
+
         if task_number and 1 <= task_number <= len(all_tasks):
             task = all_tasks[task_number - 1]
-            calendar_client.complete_task(task["id"], task["cal_id"])
-            response_text = f"✅ Выполнено: {task['title']}"
+            if intent == "delete_task":
+                calendar_client.delete_task(task["id"], task["cal_id"])
+                response_text = f"🗑 Удалено: {task['title']}"
+            else:
+                calendar_client.complete_task(task["id"], task["cal_id"])
+                response_text = f"✅ Выполнено: {task['title']}"
         else:
             response_text = "Не нашёл такую задачу. Напиши /tasks чтобы увидеть список с номерами."
         await update.message.reply_text(response_text)

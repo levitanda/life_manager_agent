@@ -89,7 +89,7 @@ def parse_message(
 
 Определи намерение и верни JSON:
 {{
-  "intent": "add_task" | "complete_task" | "show_tasks" | "get_digest" | "save_progress" | "send_email" | "chat",
+  "intent": "add_task" | "complete_task" | "delete_task" | "show_tasks" | "get_digest" | "save_progress" | "send_email" | "chat",
   "task_type": "short" | "long" | null,
   "title": "название без дат/времени" | null,
   "date": "YYYY-MM-DD" | null,
@@ -109,6 +109,7 @@ def parse_message(
 - add_task short: конкретное дело на 1-3 дня
 - add_task long: цель/проект на недели и месяцы
 - complete_task: сделал/выполнил/завершил — найди task_number по смыслу
+- delete_task: удали/убери/отмени задачу или событие — найди task_number по смыслу
 - add_task: если упомянуты люди которых нужно пригласить — добавь их имена в attendees
 - send_email: хочет отправить письмо/сообщение по email — сгенерируй тему и текст письма
 - show_tasks: показать список задач
