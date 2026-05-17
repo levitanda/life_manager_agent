@@ -583,6 +583,34 @@ async def callback_conflict(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await query.edit_message_text("Отменено.")
 
 
+def _split_message(text: str, limit: int = 4000) -> list[str]:
+    """Split text into Telegram-safe chunks, breaking on paragraph boundaries."""
+    if len(text) <= limit:
+        return [text]
+    chunks, current = [], ""
+    for paragraph in text.split("\n\n"):
+        block = (current + "\n\n" + paragraph).strip() if current else paragraph
+        if len(block) <= limit:
+            current = block
+        else:
+            if current:
+                chunks.append(current)
+            # Paragraph itself too long — split on newlines
+            if len(paragraph) > limit:
+                for line in paragraph.split("\n"):
+                    if len(current + "\n" + line) > limit:
+                        if current:
+                            chunks.append(current)
+                        current = line
+                    else:
+                        current = (current + "\n" + line).strip()
+            else:
+                current = paragraph
+    if current:
+        chunks.append(current)
+    return chunks
+
+
 async def _send_morning_digest(app: Application, target_date: datetime.date | None = None) -> None:
     last_error = None
     for attempt in range(3):
@@ -604,7 +632,8 @@ async def _send_morning_digest(app: Application, target_date: datetime.date | No
             with open(config.ALICE_DIGEST_FILE, "w", encoding="utf-8") as f:
                 f.write(text)
 
-            await app.bot.send_message(chat_id=config.TELEGRAM_CHAT_ID, text=text)
+            for chunk in _split_message(text):
+                await app.bot.send_message(chat_id=config.TELEGRAM_CHAT_ID, text=chunk)
             pushover_client.send_push(text[:1024], title="☀️ Доброе утро!")
             return
         except Exception as e:
