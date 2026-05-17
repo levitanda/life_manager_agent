@@ -52,7 +52,7 @@ async def cmd_memory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     lines = ["🧠 *Долгосрочная память (последние сессии)*\n"]
     for s in reversed(summaries):
         lines.append(f"*{s['date']}*\n{s['summary']}\n")
-    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+    await _reply_split(update, "\n".join(lines))
 
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -179,7 +179,7 @@ async def cmd_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     else:
         lines.append("*🎯 Долгосрочных задач нет.*")
 
-    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+    await _reply_split(update, "\n".join(lines))
 
 
 async def cmd_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -496,7 +496,7 @@ async def _execute_action(
         except Exception as e:
             logger.error("weekly digest failed: %s", e)
             text = "Не удалось создать недельный обзор."
-        await update.message.reply_text(text)
+        await _reply_split(update, text)
         return "[недельный обзор отправлен]"
 
     elif intent == "send_email":
@@ -587,28 +587,36 @@ def _split_message(text: str, limit: int = 4000) -> list[str]:
     """Split text into Telegram-safe chunks, breaking on paragraph boundaries."""
     if len(text) <= limit:
         return [text]
-    chunks, current = [], ""
+    chunks: list[str] = []
+    current = ""
     for paragraph in text.split("\n\n"):
-        block = (current + "\n\n" + paragraph).strip() if current else paragraph
-        if len(block) <= limit:
-            current = block
+        candidate = (current + "\n\n" + paragraph).strip() if current else paragraph
+        if len(candidate) <= limit:
+            current = candidate
         else:
             if current:
                 chunks.append(current)
-            # Paragraph itself too long — split on newlines
-            if len(paragraph) > limit:
+                current = ""
+            if len(paragraph) <= limit:
+                current = paragraph
+            else:
                 for line in paragraph.split("\n"):
-                    if len(current + "\n" + line) > limit:
+                    candidate2 = (current + "\n" + line).strip() if current else line
+                    if len(candidate2) <= limit:
+                        current = candidate2
+                    else:
                         if current:
                             chunks.append(current)
-                        current = line
-                    else:
-                        current = (current + "\n" + line).strip()
-            else:
-                current = paragraph
+                        current = line[:limit]
     if current:
         chunks.append(current)
     return chunks
+
+
+async def _reply_split(update: Update, text: str) -> None:
+    """Send a potentially long message as multiple reply_text chunks."""
+    for chunk in _split_message(text):
+        await update.message.reply_text(chunk)
 
 
 async def _send_morning_digest(app: Application, target_date: datetime.date | None = None) -> None:
