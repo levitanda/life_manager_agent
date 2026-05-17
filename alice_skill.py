@@ -40,6 +40,15 @@ def _clean_for_tts(text: str) -> str:
     return text.strip()
 
 
+def _clean_for_speech(text: str) -> str:
+    """Extra cleaning for TTS field: remove emojis, decorators, separators."""
+    text = _clean_for_tts(text)
+    text = re.sub(r"---+", "", text)                     # horizontal rules
+    text = re.sub(r"[^\w\s\d.,!?;:()\-–—«»\n]", "", text, flags=re.UNICODE)  # emojis & symbols
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
 def _split_chunks(text: str) -> list[str]:
     chunks, current = [], ""
     for paragraph in text.split("\n\n"):
@@ -60,7 +69,7 @@ def _make_response(text: str, session: dict, end: bool = True) -> dict:
         "session": session,
         "response": {
             "text": text,
-            "tts": text,
+            "tts": _clean_for_speech(text),
             "end_session": end,
         },
     }
