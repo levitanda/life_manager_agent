@@ -593,7 +593,7 @@ async def _send_morning_digest(app: Application, target_date: datetime.date | No
             yesterday = calendar_client.get_progress_before_date(target_date)
             emails = gmail_client.get_unread_emails() if target_date is None else []
             weather = weather_client.get_weather(target_date)
-            news = news_client.get_news_headlines() if target_date is None else []
+            news = news_client.get_news_headlines(max_per_source=5) if target_date is None else []
             birthdays = birthday_client.get_todays_birthdays() if target_date is None else []
 
             text = digest_module.generate_morning_digest(
