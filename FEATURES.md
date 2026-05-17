@@ -9,6 +9,8 @@
 ### Smart Home: Tuya + VeSync через cloud API
 - **Файлы:** `tuya_client.py`, `vesync_client.py`, `smart_home.py`, `tools.py`, `tests/test_smart_home.py`
 - **Что делает:** Бот может управлять всеми устройствами Tuya/Smart Life и VeSync (свет, очистители, увлажнители, выключатели, лампы, кондиционеры) — через те же аккаунты что в мобильных приложениях.
+- **В продакшене:** 10 Tuya устройств (лампы, бойлер, IR-пульты для TV/AC, датчики T&H, gateway) + 1 VeSync (Levoit Core 400S Series). Включение лампы и очистителя проверено вживую.
+- **Технические детали:** Tuya использует endpoint `/v1.0/iot-01/associated-users/devices` (старый `getdevices` теперь возвращает 1106). VeSync v3 (async) с sync-обёртками — каждый вызов делает свежий login внутри одного `asyncio.run()` чтобы не было утечек event loop.
 - **Унифицированный dispatcher:** `smart_home.py` автоматически роутит команду в правильный backend по имени устройства (case-insensitive + partial match).
 - **7 новых инструментов:** `smart_home_list`, `smart_home_turn_on`, `smart_home_turn_off`, `smart_home_set_brightness` (Tuya), `smart_home_set_color_temp` (Tuya), `smart_home_set_fan_speed` (VeSync), `smart_home_set_mode` (VeSync auto/manual/sleep).
 - **Авторизация:**
