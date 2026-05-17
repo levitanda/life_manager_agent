@@ -19,6 +19,7 @@ import pytz
 import calendar_client
 import config
 import contacts_client
+import smart_home
 import weather_client
 
 logger = logging.getLogger(__name__)
@@ -296,6 +297,52 @@ def get_weekly_digest(**_kwargs) -> dict:
     return _ok("⏳ Составляю недельный обзор...", action="send_weekly_digest")
 
 
+# ─── Smart Home (Tuya + VeSync) ──────────────────────────────────────────────
+
+def smart_home_list(**_kwargs) -> dict:
+    devices = smart_home.list_all_devices()
+    if not devices:
+        return _ok("🏠 Устройств не найдено. Проверь подключение Tuya / VeSync.")
+    lines = ["🏠 *Устройства умного дома:*"]
+    for d in devices:
+        state = d.get("state", "?")
+        icon = "🟢" if state == "on" else "⚪" if state == "off" else "❓"
+        lines.append(f"{icon} {d['name']} ({d.get('backend', '?')})")
+    return _ok("\n".join(lines))
+
+
+def smart_home_turn_on(*, device_name: str, **_kwargs) -> dict:
+    ok, msg = smart_home.turn_on(device_name)
+    icon = "💡" if ok else "⚠️"
+    return _ok(f"{icon} {msg}") if ok else _err(msg)
+
+
+def smart_home_turn_off(*, device_name: str, **_kwargs) -> dict:
+    ok, msg = smart_home.turn_off(device_name)
+    icon = "🌑" if ok else "⚠️"
+    return _ok(f"{icon} {msg}") if ok else _err(msg)
+
+
+def smart_home_set_brightness(*, device_name: str, percent: int, **_kwargs) -> dict:
+    ok, msg = smart_home.set_brightness(device_name, percent)
+    return _ok(f"💡 {msg}") if ok else _err(msg)
+
+
+def smart_home_set_color_temp(*, device_name: str, percent: int, **_kwargs) -> dict:
+    ok, msg = smart_home.set_color_temp(device_name, percent)
+    return _ok(f"🌡 {msg}") if ok else _err(msg)
+
+
+def smart_home_set_fan_speed(*, device_name: str, speed: int, **_kwargs) -> dict:
+    ok, msg = smart_home.set_fan_speed(device_name, speed)
+    return _ok(f"💨 {msg}") if ok else _err(msg)
+
+
+def smart_home_set_mode(*, device_name: str, mode: str, **_kwargs) -> dict:
+    ok, msg = smart_home.set_mode(device_name, mode)
+    return _ok(f"⚙️ {msg}") if ok else _err(msg)
+
+
 # ─── Tool schema definitions for Anthropic API ───────────────────────────────
 
 TOOL_SCHEMAS = [
@@ -413,6 +460,77 @@ TOOL_SCHEMAS = [
         },
     },
     {
+        "name": "smart_home_list",
+        "description": "List all smart home devices (Tuya + VeSync) with their on/off state.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "smart_home_turn_on",
+        "description": "Turn on a smart home device by its name (как в приложениях Tuya/VeSync). Works for lights, outlets, purifiers, humidifiers, AC units.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"device_name": {"type": "string"}},
+            "required": ["device_name"],
+        },
+    },
+    {
+        "name": "smart_home_turn_off",
+        "description": "Turn off a smart home device by name.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"device_name": {"type": "string"}},
+            "required": ["device_name"],
+        },
+    },
+    {
+        "name": "smart_home_set_brightness",
+        "description": "Set Tuya bulb brightness, 1-100 percent.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "device_name": {"type": "string"},
+                "percent": {"type": "integer", "minimum": 1, "maximum": 100},
+            },
+            "required": ["device_name", "percent"],
+        },
+    },
+    {
+        "name": "smart_home_set_color_temp",
+        "description": "Set Tuya bulb color temperature, 0 (warm) to 100 (cool).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "device_name": {"type": "string"},
+                "percent": {"type": "integer", "minimum": 0, "maximum": 100},
+            },
+            "required": ["device_name", "percent"],
+        },
+    },
+    {
+        "name": "smart_home_set_fan_speed",
+        "description": "Set VeSync purifier/humidifier/fan speed (1-3 typically).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "device_name": {"type": "string"},
+                "speed": {"type": "integer", "minimum": 1, "maximum": 5},
+            },
+            "required": ["device_name", "speed"],
+        },
+    },
+    {
+        "name": "smart_home_set_mode",
+        "description": "Set VeSync device mode: 'auto', 'manual', 'sleep'.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "device_name": {"type": "string"},
+                "mode": {"type": "string", "enum": ["auto", "manual", "sleep"]},
+            },
+            "required": ["device_name", "mode"],
+        },
+    },
+    {
         "name": "send_email",
         "description": (
             "Compose and prepare to send an email via Gmail. If to_email is missing, "
@@ -445,4 +563,11 @@ TOOL_FUNCS = {
     "send_to_alice": send_to_alice,
     "save_progress": save_progress,
     "send_email": send_email,
+    "smart_home_list": smart_home_list,
+    "smart_home_turn_on": smart_home_turn_on,
+    "smart_home_turn_off": smart_home_turn_off,
+    "smart_home_set_brightness": smart_home_set_brightness,
+    "smart_home_set_color_temp": smart_home_set_color_temp,
+    "smart_home_set_fan_speed": smart_home_set_fan_speed,
+    "smart_home_set_mode": smart_home_set_mode,
 }
