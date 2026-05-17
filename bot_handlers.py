@@ -21,6 +21,7 @@ import openai
 
 import calendar_client
 import config
+import contacts_client
 import conversation
 import digest as digest_module
 import gmail_client
@@ -207,7 +208,7 @@ async def cmd_digest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if not _is_owner(update):
         return
     await update.message.reply_text("⏳ Генерирую дайджест...")
-    await _send_morning_digest(context.application)
+    await _send_morning_digest(context.application, target_date=None)
 
 
 async def cmd_progress_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -280,9 +281,20 @@ async def _process_natural(text: str, update: Update, context: ContextTypes.DEFA
             if end_date_str:
                 end_date = datetime.date.fromisoformat(end_date_str)
 
+        attendee_names = parsed.get("attendees") or []
+        attendee_emails = []
+        not_found = []
+        for name in attendee_names:
+            email = contacts_client.find_contact_email(name)
+            if email:
+                attendee_emails.append(email)
+            else:
+                not_found.append(name)
+
         try:
             calendar_client.add_task(title, task_type, due_date=due_date, end_date=end_date,
-                                     start_dt=start_dt, duration_minutes=duration_minutes)
+                                     start_dt=start_dt, duration_minutes=duration_minutes,
+                                     attendees=attendee_emails or None)
             emoji = "⚡" if task_type == "short" else "🎯"
             if start_dt:
                 dur_str = f"{duration_minutes} мин." if duration_minutes != 60 else "1 час"
@@ -293,6 +305,10 @@ async def _process_natural(text: str, update: Update, context: ContextTypes.DEFA
                 response_text = f"{emoji} Добавил: {title}\n📅 до {due_date.strftime('%d.%m.%Y')}"
             else:
                 response_text = f"{emoji} Добавил: {title}"
+            if attendee_emails:
+                response_text += f"\n👥 Приглашены: {', '.join(attendee_emails)}"
+            if not_found:
+                response_text += f"\n⚠️ Не нашёл в контактах: {', '.join(not_found)}"
         except Exception as e:
             logger.error("natural add_task failed: %s", e)
             response_text = "Не смог добавить задачу, попробуй ещё раз."
@@ -313,8 +329,11 @@ async def _process_natural(text: str, update: Update, context: ContextTypes.DEFA
         response_text = "[список задач]"
 
     elif intent == "get_digest":
-        await update.message.reply_text("⏳ Генерирую дайджест...")
-        await _send_morning_digest(context.application)
+        date_str = parsed.get("date")
+        target_date = datetime.date.fromisoformat(date_str) if date_str else None
+        label = date_str or "сегодня"
+        await update.message.reply_text(f"⏳ Генерирую дайджест на {label}...")
+        await _send_morning_digest(context.application, target_date)
         response_text = "[дайджест отправлен]"
 
     elif intent == "save_progress":
@@ -381,17 +400,17 @@ async def callback_email(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await query.edit_message_text("Отменено.")
 
 
-async def _send_morning_digest(app: Application) -> None:
+async def _send_morning_digest(app: Application, target_date: datetime.date | None = None) -> None:
     last_error = None
     for attempt in range(3):
         try:
-            events = calendar_client.get_todays_calendar_events()
-            short = calendar_client.get_active_tasks("short")
-            long_ = calendar_client.get_active_tasks("long")
-            yesterday = calendar_client.get_yesterday_progress()
-            emails = gmail_client.get_unread_emails()
+            events = calendar_client.get_todays_calendar_events(target_date)
+            short = calendar_client.get_active_tasks("short", target_date)
+            long_ = calendar_client.get_active_tasks("long", target_date)
+            yesterday = calendar_client.get_progress_before_date(target_date)
+            emails = gmail_client.get_unread_emails() if target_date is None else []
 
-            text = digest_module.generate_morning_digest(events, short, long_, yesterday, emails)
+            text = digest_module.generate_morning_digest(events, short, long_, yesterday, emails, target_date)
 
             with open(config.ALICE_DIGEST_FILE, "w", encoding="utf-8") as f:
                 f.write(text)

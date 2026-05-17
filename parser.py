@@ -101,6 +101,7 @@ def parse_message(
   "to_name": "имя получателя или null",
   "email_subject": "тема письма или null",
   "email_body": "текст письма или null",
+  "attendees": ["Имя1", "Имя2"] или null,
   "reply": "короткий ответ если intent=chat" | null
 }}
 
@@ -108,6 +109,7 @@ def parse_message(
 - add_task short: конкретное дело на 1-3 дня
 - add_task long: цель/проект на недели и месяцы
 - complete_task: сделал/выполнил/завершил — найди task_number по смыслу
+- add_task: если упомянуты люди которых нужно пригласить — добавь их имена в attendees
 - send_email: хочет отправить письмо/сообщение по email — сгенерируй тему и текст письма
 - show_tasks: показать список задач
 - get_digest: дайджест или план на день

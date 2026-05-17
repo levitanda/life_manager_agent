@@ -51,13 +51,18 @@ def generate_morning_digest(
     long_tasks: list[dict],
     yesterday_progress: Optional[str],
     emails: Optional[list[dict]] = None,
+    target_date: Optional[datetime.date] = None,
 ) -> str:
     tz = pytz.timezone(config.TIMEZONE)
-    today = datetime.datetime.now(tz)
+    ref_dt = (
+        datetime.datetime.combine(target_date, datetime.time(), tzinfo=tz)
+        if target_date
+        else datetime.datetime.now(tz)
+    )
     weekday_ru = [
         "понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"
-    ][today.weekday()]
-    date_str = today.strftime(f"%d %B %Y, {weekday_ru}")
+    ][ref_dt.weekday()]
+    date_str = ref_dt.strftime(f"%d %B %Y, {weekday_ru}")
 
     emails_section = ""
     if emails is not None:
