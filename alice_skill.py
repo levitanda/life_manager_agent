@@ -66,7 +66,11 @@ def _split_chunks(text: str) -> list[str]:
 def _make_response(text: str, session: dict, end: bool = True) -> dict:
     return {
         "version": "1.0",
-        "session": session,
+        "session": {
+            "session_id": session.get("session_id", ""),
+            "message_id": session.get("message_id", 0),
+            "user_id": session.get("user_id", ""),
+        },
         "response": {
             "text": text,
             "tts": _clean_for_speech(text),
