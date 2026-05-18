@@ -120,11 +120,13 @@ def phone_to_jid(phone: str) -> str:
 
 
 def send_to_chat(chat_id: str, text: str) -> tuple[bool, str]:
+    # First message to an unseen JID may take 20-25s while Baileys negotiates
+    # the session, so we allow a generous timeout.
     try:
         r = requests.post(
             f"{BRIDGE_URL}/send",
             json={"chatId": chat_id, "text": text},
-            timeout=15,
+            timeout=45,
         )
         if r.status_code == 200:
             return True, "Отправлено"

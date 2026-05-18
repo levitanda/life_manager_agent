@@ -101,7 +101,7 @@ async function startSocket() {
     logger: pino({ level: LOG_LEVEL }),
     printQRInTerminal: false,
     browser: Browsers.macOS('LifeAgent'),
-    syncFullHistory: true,
+    syncFullHistory: false,
     markOnlineOnConnect: false,
   });
 
