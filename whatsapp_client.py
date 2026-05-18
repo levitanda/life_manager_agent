@@ -114,7 +114,23 @@ def find_chats(query: str) -> list[dict]:
 
 
 def phone_to_jid(phone: str) -> str:
-    """Convert a phone string (any format) to WhatsApp personal JID."""
+    """Convert a phone string (any format) to WhatsApp personal JID.
+
+    Uses phonenumbers to normalise local numbers (e.g. Israeli 0528957566)
+    into international format (972528957566) using DEFAULT_PHONE_REGION
+    from env (default 'IL').
+    """
+    try:
+        import phonenumbers
+        region = os.environ.get("DEFAULT_PHONE_REGION", "IL")
+        parsed = phonenumbers.parse(phone, region)
+        if phonenumbers.is_valid_number(parsed):
+            digits = f"{parsed.country_code}{parsed.national_number}"
+            return f"{digits}@s.whatsapp.net"
+        logger.warning("phone_to_jid: invalid number %r (region %s)", phone, region)
+    except Exception as e:
+        logger.warning("phone_to_jid: failed to parse %r: %s", phone, e)
+    # Fallback: strip non-digits (may produce an invalid JID — Baileys will time out)
     digits = "".join(c for c in phone if c.isdigit())
     return f"{digits}@s.whatsapp.net"
 

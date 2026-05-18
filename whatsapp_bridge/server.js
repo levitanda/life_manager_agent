@@ -275,8 +275,25 @@ app.post('/send', async (req, res) => {
     return res.status(400).json({ error: 'chatId and text required' });
   }
   try {
-    await sock.sendMessage(chatId, { text });
-    // Clear unread for that chat (we just sent — implies read)
+    // Verify the JID is on WhatsApp before sending — avoids hanging on invalid numbers
+    if (chatId.endsWith('@s.whatsapp.net')) {
+      const phone = chatId.split('@')[0];
+      try {
+        const [check] = await sock.onWhatsApp(phone);
+        if (!check || !check.exists) {
+          return res.status(404).json({ error: `Number ${phone} is not on WhatsApp` });
+        }
+      } catch (verifyErr) {
+        // Continue; onWhatsApp can fail without meaning the number is invalid
+      }
+    }
+
+    const sendPromise = sock.sendMessage(chatId, { text });
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('send_timeout_30s')), 30000),
+    );
+    await Promise.race([sendPromise, timeoutPromise]);
+
     const existing = chatStore.get(chatId);
     if (existing) existing.unreadCount = 0;
     res.json({ ok: true });

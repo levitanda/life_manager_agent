@@ -289,10 +289,25 @@ def test_tool_send_to_any_contact_without_phone():
     assert "не нашёл" in r["summary"].lower()
 
 
-def test_phone_to_jid_normalizes():
-    """phone_to_jid should strip non-digits."""
+def test_phone_to_jid_normalizes_international():
+    """phone_to_jid accepts numbers in international format."""
     assert whatsapp_client.phone_to_jid("+972 50-123-4567") == "972501234567@s.whatsapp.net"
     assert whatsapp_client.phone_to_jid("(972) 50 123 4567") == "972501234567@s.whatsapp.net"
+
+
+def test_phone_to_jid_normalizes_local_il(monkeypatch):
+    """Israeli local format (0XX...) is converted to international with code 972."""
+    monkeypatch.setenv("DEFAULT_PHONE_REGION", "IL")
+    assert whatsapp_client.phone_to_jid("0528957566") == "972528957566@s.whatsapp.net"
+    assert whatsapp_client.phone_to_jid("052-895-7566") == "972528957566@s.whatsapp.net"
+
+
+def test_phone_to_jid_invalid_fallback(monkeypatch):
+    """Unparseable numbers fall back to digit-only (Baileys will reject if invalid)."""
+    monkeypatch.setenv("DEFAULT_PHONE_REGION", "IL")
+    # garbage that phonenumbers can't parse
+    result = whatsapp_client.phone_to_jid("abc")
+    assert result.endswith("@s.whatsapp.net")
 
 
 def test_tool_send_to_any_ambiguous():

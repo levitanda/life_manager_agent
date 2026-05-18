@@ -11,3 +11,4 @@ openai>=1.30.0
 pytest>=8.0.0
 pyvesync>=3.4.0
 tinytuya>=1.18.0
+phonenumbers>=8.13.0
