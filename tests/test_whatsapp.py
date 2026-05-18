@@ -248,6 +248,53 @@ def test_tool_send_to_any_no_match():
     assert r["status"] == "error"
 
 
+def test_tool_send_to_any_falls_back_to_google_contacts():
+    """When chat is not in registry/bridge, try Google Contacts → phone → JID."""
+    with patch("whatsapp_client.status", return_value={"ready": True}), \
+         patch("whatsapp_client._load_registry", return_value={}), \
+         patch("whatsapp_client.find_chats", return_value=[]), \
+         patch("contacts_client.find_contact", return_value={
+             "name": "Анна Иванова", "email": None, "phone": "972501234567"
+         }), \
+         patch("whatsapp_client.send_to_chat", return_value=(True, "ok")) as mock_send:
+        r = tools.whatsapp_send_to_any(chat_query="Анна", message="привет")
+    assert r["status"] == "ok"
+    assert "Анна Иванова" in r["summary"]
+    # Verify the JID was constructed from the phone
+    sent_jid = mock_send.call_args[0][0]
+    assert sent_jid == "972501234567@s.whatsapp.net"
+
+
+def test_tool_send_to_any_registry_wins_over_contacts():
+    """Registry match should be tried first (preserves signatures)."""
+    registry = {"женя": {"chat_id": "972501234567@s.whatsapp.net", "signature": "— Личный ассистент Дарьи"}}
+    with patch("whatsapp_client.status", return_value={"ready": True}), \
+         patch("whatsapp_client._load_registry", return_value=registry), \
+         patch("whatsapp_client.send_to_name", return_value=(True, "ok")) as mock_send_name, \
+         patch("contacts_client.find_contact") as mock_contacts:
+        r = tools.whatsapp_send_to_any(chat_query="женя", message="привет")
+    assert r["status"] == "ok"
+    mock_send_name.assert_called_once()
+    mock_contacts.assert_not_called()
+
+
+def test_tool_send_to_any_contact_without_phone():
+    """Google Contacts match but no phone → error."""
+    with patch("whatsapp_client.status", return_value={"ready": True}), \
+         patch("whatsapp_client._load_registry", return_value={}), \
+         patch("whatsapp_client.find_chats", return_value=[]), \
+         patch("contacts_client.find_contact", return_value={"name": "X", "email": "x@y", "phone": None}):
+        r = tools.whatsapp_send_to_any(chat_query="X", message="hi")
+    assert r["status"] == "error"
+    assert "не нашёл" in r["summary"].lower()
+
+
+def test_phone_to_jid_normalizes():
+    """phone_to_jid should strip non-digits."""
+    assert whatsapp_client.phone_to_jid("+972 50-123-4567") == "972501234567@s.whatsapp.net"
+    assert whatsapp_client.phone_to_jid("(972) 50 123 4567") == "972501234567@s.whatsapp.net"
+
+
 def test_tool_send_to_any_ambiguous():
     matches = [
         {"id": "1@g.us", "name": "Семья мамы"},

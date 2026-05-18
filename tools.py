@@ -425,30 +425,54 @@ def whatsapp_review_unread(**_kwargs) -> dict:
 
 
 def whatsapp_send_to_any(*, chat_query: str, message: str, **_kwargs) -> dict:
-    """Send to ANY WhatsApp chat by fuzzy name search (no registry entry needed).
-
-    Use when the user names a contact/group that's not in whatsapp_groups.json.
+    """Multi-source recipient resolution:
+      1. whatsapp_groups.json registry (with signature support)
+      2. Baileys fuzzy chat search (known WhatsApp chats and groups)
+      3. Google Contacts → phone number → WhatsApp JID
     """
     st = whatsapp_client.status()
     if not st.get("ready"):
         return _err(f"WhatsApp bridge не готов: {st.get('error') or 'не авторизован'}")
+
+    needle = chat_query.lower().strip()
+
+    # 1. Registry first — preserves configured signatures
+    registry = whatsapp_client._load_registry()
+    if needle in registry:
+        ok, msg = whatsapp_client.send_to_name(chat_query, message)
+        if ok:
+            return _ok(f"💬 Отправлено в WhatsApp: «{chat_query}»")
+        return _err(f"WhatsApp: {msg}")
+
+    # 2. Fuzzy search across Baileys-known chats
     matches = whatsapp_client.find_chats(chat_query)
-    if not matches:
-        return _err(
-            f"Не нашёл в WhatsApp чат с «{chat_query}». "
-            f"Скажи точнее или попроси whatsapp_list_groups."
-        )
+    if len(matches) == 1:
+        chat = matches[0]
+        ok, msg = whatsapp_client.send_to_chat(chat["id"], message)
+        if ok:
+            return _ok(f"💬 Отправлено в WhatsApp: «{chat['name']}»")
+        return _err(f"WhatsApp: {msg}")
     if len(matches) > 1:
-        lines = [f"Несколько совпадений с «{chat_query}»:"]
+        lines = [f"Несколько совпадений с «{chat_query}» среди WhatsApp-чатов:"]
         for m in matches[:5]:
-            lines.append(f"  • {m['name']} (`{m['id']}`)")
+            lines.append(f"  • {m['name']}")
         lines.append("Уточни какой именно (по полному названию).")
         return _err("\n".join(lines))
-    chat = matches[0]
-    ok, msg = whatsapp_client.send_to_chat(chat["id"], message)
-    if ok:
-        return _ok(f"💬 Отправлено в WhatsApp: «{chat['name']}»")
-    return _err(f"WhatsApp: {msg}")
+
+    # 3. Google Contacts → phone → WA JID
+    contact = contacts_client.find_contact(chat_query)
+    if contact and contact.get("phone"):
+        jid = whatsapp_client.phone_to_jid(contact["phone"])
+        display = contact.get("name") or chat_query
+        ok, msg = whatsapp_client.send_to_chat(jid, message)
+        if ok:
+            return _ok(f"💬 Отправлено в WhatsApp: «{display}» (+{contact['phone']})")
+        return _err(f"WhatsApp ({display}): {msg}")
+
+    return _err(
+        f"Не нашёл «{chat_query}» ни в WhatsApp-чатах, ни в Google Contacts. "
+        f"Уточни имя точнее или дай номер телефона."
+    )
 
 
 # ─── record_completed_task (retroactive logging) ─────────────────────────────
@@ -797,15 +821,17 @@ TOOL_SCHEMAS = [
     {
         "name": "whatsapp_send_to_any",
         "description": (
-            "Send a WhatsApp message to ANY chat by fuzzy-searching its name "
-            "(chat_query). Use this when the user names a chat/contact NOT in "
-            "whatsapp_groups.json — e.g. 'напиши маме что задерживаюсь'. "
-            "If multiple chats match, you'll get a disambiguation prompt."
+            "Send a WhatsApp message to ANY recipient by name. Multi-source resolution: "
+            "(1) checks whatsapp_groups.json registry, (2) fuzzy-searches known WhatsApp "
+            "chats/groups, (3) looks up the name in Google Contacts and uses their phone "
+            "number to construct a WhatsApp JID. Use this for 'напиши маме', 'отправь "
+            "Ивану', 'передай в группу X' — works even for people the bot has never "
+            "messaged before, as long as they're in Google Contacts with a phone number."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "chat_query": {"type": "string", "description": "Part of the chat/contact name"},
+                "chat_query": {"type": "string", "description": "Recipient name (person or group)"},
                 "message": {"type": "string"},
             },
             "required": ["chat_query", "message"],

@@ -45,3 +45,11 @@ def mock_birthday_service():
     mock_svc = MagicMock()
     with patch("birthday_client.build", return_value=mock_svc):
         yield mock_svc
+
+
+@pytest.fixture
+def mock_contacts_service():
+    """Patch contacts_client._get_service directly."""
+    mock_svc = MagicMock()
+    with patch("contacts_client._get_service", return_value=mock_svc):
+        yield mock_svc

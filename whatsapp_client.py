@@ -113,6 +113,12 @@ def find_chats(query: str) -> list[dict]:
         return []
 
 
+def phone_to_jid(phone: str) -> str:
+    """Convert a phone string (any format) to WhatsApp personal JID."""
+    digits = "".join(c for c in phone if c.isdigit())
+    return f"{digits}@s.whatsapp.net"
+
+
 def send_to_chat(chat_id: str, text: str) -> tuple[bool, str]:
     try:
         r = requests.post(

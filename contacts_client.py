@@ -29,3 +29,32 @@ def find_contact_email(name: str) -> str | None:
     except Exception as e:
         logger.warning("Contact search failed for %r: %s", name, e)
     return None
+
+
+def find_contact(name: str) -> dict | None:
+    """Return {name, email, phone} for the first matching contact, or None.
+    Phone is normalized to digits only (international format without '+').
+    """
+    try:
+        result = (
+            _get_service()
+            .people()
+            .searchContacts(query=name, readMask="names,emailAddresses,phoneNumbers")
+            .execute()
+        )
+        results = result.get("results", [])
+        if not results:
+            return None
+        person = results[0].get("person", {})
+        names = person.get("names", [])
+        display_name = names[0].get("displayName") if names else name
+        emails = person.get("emailAddresses", [])
+        phones = person.get("phoneNumbers", [])
+        return {
+            "name": display_name,
+            "email": emails[0]["value"] if emails else None,
+            "phone": "".join(c for c in phones[0]["value"] if c.isdigit()) if phones else None,
+        }
+    except Exception as e:
+        logger.warning("Full contact search failed for %r: %s", name, e)
+        return None
