@@ -249,6 +249,28 @@ app.get('/unread', (_req, res) => {
   res.json({ chats: list });
 });
 
+app.get('/recent', (req, res) => {
+  if (!isReady) return res.status(503).json({ error: 'not_ready' });
+  const limit = parseInt(req.query.limit || '50', 10);
+  const msgsPer = parseInt(req.query.messages_per_chat || '10', 10);
+
+  const list = Array.from(chatStore.values())
+    .filter((c) => messageStore.has(c.id))
+    .sort((a, b) => (b.lastTs || 0) - (a.lastTs || 0))
+    .slice(0, limit)
+    .map((c) => {
+      const messages = (messageStore.get(c.id) || []).slice(-msgsPer);
+      const lastMsg = messages[messages.length - 1];
+      return {
+        ...c,
+        recentMessages: messages,
+        lastFromMe: lastMsg ? !!lastMsg.fromMe : null,
+        lastMessageTs: lastMsg ? lastMsg.ts : null,
+      };
+    });
+  res.json({ chats: list });
+});
+
 app.get('/chat/:id/messages', (req, res) => {
   if (!isReady) return res.status(503).json({ error: 'not_ready' });
   const limit = parseInt(req.query.limit || '20', 10);
