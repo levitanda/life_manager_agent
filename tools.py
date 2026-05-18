@@ -161,23 +161,47 @@ def delete_task(*, task_number: int, _active_tasks=None, **_kwargs) -> dict:
 
 def reschedule_task(
     *,
-    task_number: int,
+    task_number: Optional[int] = None,
+    event_title: Optional[str] = None,
     date: Optional[str] = None,
     time: Optional[str] = None,
     duration_minutes: int = 60,
     _active_tasks=None,
     **_kwargs,
 ) -> dict:
-    task = _resolve_task_by_number(task_number, _active_tasks or [])
-    if not task:
-        return _err("Не нашёл такую задачу.")
+    """Reschedule a task (by task_number from the active list) OR any calendar
+    event (by event_title — fuzzy substring match across primary + task calendars).
+    """
     if not time:
-        return _err("Укажи новое время (например, «перенеси задачу 2 на завтра в 15:00»).")
+        return _err("Укажи новое время (например, «перенеси встречу с Леонелем на пятницу в 17:00»).")
+
+    target = None  # dict with id, cal_id, title
+    if task_number is not None:
+        task = _resolve_task_by_number(task_number, _active_tasks or [])
+        if task:
+            target = {"id": task["id"], "cal_id": task["cal_id"], "title": task["title"]}
+
+    if target is None and event_title:
+        matches = calendar_client.find_event_by_title(event_title)
+        if not matches:
+            return _err(f"В календаре не нашлось события с «{event_title}». Уточни название.")
+        if len(matches) > 1:
+            lines = [f"Нашёл несколько событий с «{event_title}»:"]
+            for m in matches[:5]:
+                lines.append(f"  • {m['summary']} — {m['start'].strftime('%d.%m в %H:%M')}")
+            lines.append("Уточни какое именно (по дате или времени).")
+            return _err("\n".join(lines))
+        m = matches[0]
+        target = {"id": m["id"], "cal_id": m["cal_id"], "title": m["summary"]}
+
+    if target is None:
+        return _err("Не понял, что переносить — укажи task_number или event_title.")
+
     new_start = _resolve_start_dt(date, time)
     new_end = new_start + datetime.timedelta(minutes=duration_minutes)
     try:
-        calendar_client.reschedule_task(task["id"], task["cal_id"], new_start, new_end)
-        return _ok(f"📅 Перенесено: «{task['title']}» → {new_start.strftime('%d.%m.%Y в %H:%M')}")
+        calendar_client.reschedule_task(target["id"], target["cal_id"], new_start, new_end)
+        return _ok(f"📅 Перенесено: «{target['title']}» → {new_start.strftime('%d.%m.%Y в %H:%M')}")
     except Exception as e:
         logger.error("reschedule_task failed: %s", e)
         return _err(f"Не удалось перенести: {e}")
@@ -505,16 +529,23 @@ TOOL_SCHEMAS = [
     },
     {
         "name": "reschedule_task",
-        "description": "Move a task/event to a new date and time.",
+        "description": (
+            "Reschedule ANY task or calendar event to a new date/time. "
+            "Use task_number for items in the active task list, OR event_title "
+            "(a keyword/name like 'Леонель') to find an event in the primary "
+            "Google Calendar by fuzzy match. ALWAYS use event_title when the user "
+            "refers to a meeting/event by name rather than a list number."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "task_number": {"type": "integer"},
+                "task_number": {"type": "integer", "description": "Index in active task list (1-based)"},
+                "event_title": {"type": "string", "description": "Name/keyword of the event to find in calendar"},
                 "date": {"type": "string", "description": "YYYY-MM-DD"},
                 "time": {"type": "string", "description": "HH:MM"},
                 "duration_minutes": {"type": "integer", "default": 60},
             },
-            "required": ["task_number", "time"],
+            "required": ["time"],
         },
     },
     {

@@ -1,6 +1,7 @@
 """Google Calendar storage for tasks and progress notes."""
 
 import datetime
+import logging
 from typing import Optional
 
 import pytz
@@ -8,6 +9,8 @@ from googleapiclient.discovery import build
 
 import config
 import google_auth
+
+logger = logging.getLogger(__name__)
 
 _calendar_ids: dict[str, str] = {}
 
@@ -248,6 +251,63 @@ def record_completed_task(
     }
     result = _get_service().events().insert(calendarId=cal_id, body=event).execute()
     return result["id"]
+
+
+def find_event_by_title(title_query: str, look_ahead_days: int = 14, look_back_days: int = 1) -> list[dict]:
+    """Search primary + task calendars for events whose summary matches query.
+
+    Returns list of {id, cal_id, summary, start, end} sorted by start time.
+    Match is case-insensitive substring.
+    """
+    tz = pytz.timezone(config.TIMEZONE)
+    now = datetime.datetime.now(tz)
+    start = (now - datetime.timedelta(days=look_back_days)).isoformat()
+    end = (now + datetime.timedelta(days=look_ahead_days)).isoformat()
+
+    cal_ids = ["primary"]
+    try:
+        cal_ids.append(_get_or_create_calendar(config.SHORT_TASK_CALENDAR))
+        cal_ids.append(_get_or_create_calendar(config.LONG_TASK_CALENDAR))
+    except Exception:
+        pass
+
+    needle = title_query.lower().strip()
+    matches: list[dict] = []
+    svc = _get_service()
+    for cal_id in cal_ids:
+        try:
+            result = svc.events().list(
+                calendarId=cal_id,
+                timeMin=start,
+                timeMax=end,
+                singleEvents=True,
+                orderBy="startTime",
+                q=title_query,  # server-side filter as a first pass
+            ).execute()
+            for ev in result.get("items", []):
+                summary = ev.get("summary", "")
+                if needle not in summary.lower():
+                    continue
+                s_info = ev["start"]
+                e_info = ev.get("end", {})
+                if "dateTime" in s_info:
+                    s_dt = datetime.datetime.fromisoformat(s_info["dateTime"]).astimezone(tz)
+                    e_dt = datetime.datetime.fromisoformat(e_info["dateTime"]).astimezone(tz)
+                else:
+                    s_dt = tz.localize(datetime.datetime.combine(
+                        datetime.date.fromisoformat(s_info["date"]), datetime.time.min))
+                    e_dt = tz.localize(datetime.datetime.combine(
+                        datetime.date.fromisoformat(e_info["date"]), datetime.time.min))
+                matches.append({
+                    "id": ev["id"],
+                    "cal_id": cal_id,
+                    "summary": summary,
+                    "start": s_dt,
+                    "end": e_dt,
+                })
+        except Exception as e:
+            logger.warning("find_event_by_title failed for %s: %s", cal_id, e)
+    return sorted(matches, key=lambda m: m["start"])
 
 
 def reschedule_task(

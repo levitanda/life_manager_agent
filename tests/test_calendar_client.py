@@ -120,6 +120,34 @@ def test_get_conflicts_empty():
 
 # ─── get_week_events ──────────────────────────────────────────────────────────
 
+def test_find_event_by_title_matches_substring(mock_calendar_service):
+    svc = mock_calendar_service
+    svc.calendarList().list().execute.return_value = {
+        "items": [{"id": "cal_short", "summary": "Задачи краткосрочные"}],
+    }
+    svc.events().list().execute.return_value = {
+        "items": [
+            {"id": "ev1", "summary": "Урок с Леонелем",
+             "start": {"dateTime": "2026-05-22T19:00:00+03:00"},
+             "end":   {"dateTime": "2026-05-22T20:00:00+03:00"}},
+            {"id": "ev2", "summary": "Другое",
+             "start": {"dateTime": "2026-05-21T10:00:00+03:00"},
+             "end":   {"dateTime": "2026-05-21T11:00:00+03:00"}},
+        ]
+    }
+    matches = calendar_client.find_event_by_title("Леонел")
+    titles = [m["summary"] for m in matches]
+    assert "Урок с Леонелем" in titles
+    assert "Другое" not in titles
+
+
+def test_find_event_by_title_no_match(mock_calendar_service):
+    svc = mock_calendar_service
+    svc.calendarList().list().execute.return_value = {"items": []}
+    svc.events().list().execute.return_value = {"items": []}
+    assert calendar_client.find_event_by_title("несуществующее") == []
+
+
 def test_get_week_events_groups_by_date(mock_calendar_service):
     svc = mock_calendar_service
     svc.events().list().execute.return_value = {

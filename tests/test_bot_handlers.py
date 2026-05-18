@@ -75,6 +75,49 @@ def test_execute_reschedule_task_no_time():
     assert "Укажи" in result or "время" in result.lower()
 
 
+def test_tool_reschedule_by_event_title():
+    """Tool layer: reschedule by event_title looks up in calendar."""
+    import tools
+    import pytz, datetime
+    tz = pytz.timezone("Asia/Jerusalem")
+    fake_match = {
+        "id": "ev_x",
+        "cal_id": "primary",
+        "summary": "Урок с Леонелем",
+        "start": tz.localize(datetime.datetime(2026, 5, 22, 19, 0)),
+        "end": tz.localize(datetime.datetime(2026, 5, 22, 20, 0)),
+    }
+    with patch("calendar_client.find_event_by_title", return_value=[fake_match]), \
+         patch("calendar_client.reschedule_task", return_value=True) as mock_resched:
+        result = tools.reschedule_task(event_title="Леонел", date="2026-05-22", time="17:00")
+    assert result["status"] == "ok"
+    assert "Леонел" in result["summary"]
+    mock_resched.assert_called_once()
+
+
+def test_tool_reschedule_by_event_title_no_match():
+    import tools
+    with patch("calendar_client.find_event_by_title", return_value=[]):
+        result = tools.reschedule_task(event_title="несуществующее", time="17:00")
+    assert result["status"] == "error"
+
+
+def test_tool_reschedule_by_event_title_ambiguous():
+    import tools
+    import pytz, datetime
+    tz = pytz.timezone("Asia/Jerusalem")
+    matches = [
+        {"id": f"ev{i}", "cal_id": "primary", "summary": "встреча",
+         "start": tz.localize(datetime.datetime(2026, 5, 20+i, 10, 0)),
+         "end": tz.localize(datetime.datetime(2026, 5, 20+i, 11, 0))}
+        for i in range(3)
+    ]
+    with patch("calendar_client.find_event_by_title", return_value=matches):
+        result = tools.reschedule_task(event_title="встреча", time="17:00")
+    assert result["status"] == "error"
+    assert "несколько" in result["summary"].lower()
+
+
 # ─── find_free_time ───────────────────────────────────────────────────────────
 
 def test_execute_find_free_time_with_slots():
