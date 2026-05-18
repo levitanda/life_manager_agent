@@ -87,6 +87,23 @@ def _format_summaries(summaries: list[dict]) -> str:
     return "\n\n".join(lines)
 
 
+def _format_whatsapp_unread(unread: list[dict]) -> str:
+    if not unread:
+        return ""
+    blocks = []
+    for chat in unread[:10]:
+        name = chat.get("name") or chat.get("id", "?")
+        n = chat.get("unreadCount", 0)
+        msgs_lines = []
+        for m in (chat.get("recentMessages") or [])[-6:]:
+            sender = m.get("senderName") or ("я" if m.get("fromMe") else "?")
+            text = (m.get("text") or "")[:180]
+            prefix = "→" if m.get("fromMe") else "·"
+            msgs_lines.append(f"  {prefix} {sender}: {text}")
+        blocks.append(f"{name} ({n} непрочит.):\n" + "\n".join(msgs_lines))
+    return "\n\n".join(blocks)
+
+
 def generate_morning_digest(
     calendar_events: list[dict],
     short_tasks: list[dict],
@@ -99,6 +116,7 @@ def generate_morning_digest(
     birthdays: Optional[list[dict]] = None,
     recent_messages: Optional[list[dict]] = None,
     summaries: Optional[list[dict]] = None,
+    whatsapp_unread: Optional[list[dict]] = None,
 ) -> str:
     tz = pytz.timezone(config.TIMEZONE)
     ref_dt = (
@@ -118,6 +136,11 @@ def generate_morning_digest(
     weather_section = f"\nПОГОДА: {weather}\n" if weather else ""
     news_section = f"\nНОВОСТИ:\n{_format_news(news)}\n" if news else ""
     birthday_section = f"\n🎂 {_format_birthdays(birthdays)}\n" if birthdays else ""
+
+    whatsapp_text = _format_whatsapp_unread(whatsapp_unread or [])
+    whatsapp_section = (
+        f"\nНЕПРОЧИТАННЫЕ WHATSAPP:\n{whatsapp_text}\n" if whatsapp_text else ""
+    )
 
     history_text = _format_history(recent_messages or [])
     history_section = (
@@ -146,21 +169,22 @@ def generate_morning_digest(
 
 ПРОГРЕСС ЗА ВЧЕРА:
 {yesterday_progress or "Нет данных."}
-{weather_section}{birthday_section}{emails_section}{news_section}
+{weather_section}{birthday_section}{emails_section}{whatsapp_section}{news_section}
 Напиши дружелюбный, мотивирующий дайджест. Структура:
 1. Приветствие с датой и погодой; если из недавнего разговора видно что-то важное (настроение, события, переживания) — отрази это в приветствии. Не «доброе утро» в пустоту, а как будто продолжаешь живой разговор.
 2. Если есть дни рождения — обязательно упомяни их тепло
 3. Что сегодня в расписании
 4. На чём сосредоточиться из задач (приоритеты). Если вчера обсуждали конкретные планы — свяжи их с сегодняшними задачами.
 5. Важные письма — только если есть что-то требующее ответа или действия (1-3 письма максимум)
-6. Новости — ОБЯЗАТЕЛЬНО отдельно по каждому каналу:
+6. WhatsApp — если есть непрочитанные: коротко выдели 1-3 чата с **действительно важным** (срочное, требует ответа, эмоционально значимое). Не пересказывай все чаты — фильтруй. Спам, флуд в группах, рекламу — пропускай. Если ничего важного нет — просто скажи «есть N непрочитанных в WhatsApp, ничего срочного».
+7. Новости — ОБЯЗАТЕЛЬНО отдельно по каждому каналу:
    • Кан 11: 2-3 главные темы + одна фраза — общий фон новостей канала
    • Кешет 12: 2-3 главные темы + одна фраза — общий фон
    • Дождь: 2-3 главные темы + одна фраза — общий фон
    Если какого-то канала нет в данных — пропусти его без упоминания.
-7. Напоминание о долгосрочных целях. Если из памяти видно прогресс или застой — упомяни.
-8. Одна идея для отдыха или развития на сегодня. Если из истории видны интересы пользователя — попади в них.
-9. Короткое мотивирующее напутствие — личное, не шаблонное.
+8. Напоминание о долгосрочных целях. Если из памяти видно прогресс или застой — упомяни.
+9. Одна идея для отдыха или развития на сегодня. Если из истории видны интересы пользователя — попади в них.
+10. Короткое мотивирующее напутствие — личное, не шаблонное.
 
 Будь конкретным и живым. Если в разговоре было что-то эмоционально важное (заболел, устала, переживает) — обязательно среагируй на это в дайджесте. Не игнорируй контекст. Не повторяй просто список — дай осмысленные рекомендации."""
 

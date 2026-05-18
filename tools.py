@@ -399,6 +399,58 @@ def whatsapp_list_groups(**_kwargs) -> dict:
     return _ok("\n".join(lines))
 
 
+def whatsapp_review_unread(**_kwargs) -> dict:
+    """Fetch all unread WhatsApp chats with recent message context for review.
+
+    The agent uses this to summarize what's been said and suggest responses.
+    """
+    st = whatsapp_client.status()
+    if not st.get("ready"):
+        return _err(f"WhatsApp bridge не готов: {st.get('error') or 'не авторизован'}")
+    chats = whatsapp_client.unread_chats()
+    if not chats:
+        return _ok("В WhatsApp нет непрочитанных сообщений.")
+
+    blocks = [f"💬 *Непрочитанные WhatsApp ({len(chats)} чатов):*"]
+    for chat in chats:
+        name = chat.get("name") or chat["id"]
+        n = chat.get("unreadCount", 0)
+        blocks.append(f"\n*{name}* — {n} нов.:")
+        for m in chat.get("recentMessages", [])[-10:]:
+            sender = m.get("senderName") or ("я" if m.get("fromMe") else "?")
+            text = (m.get("text") or "")[:240]
+            prefix = "→" if m.get("fromMe") else "·"
+            blocks.append(f"  {prefix} {sender}: {text}")
+    return _ok("\n".join(blocks))
+
+
+def whatsapp_send_to_any(*, chat_query: str, message: str, **_kwargs) -> dict:
+    """Send to ANY WhatsApp chat by fuzzy name search (no registry entry needed).
+
+    Use when the user names a contact/group that's not in whatsapp_groups.json.
+    """
+    st = whatsapp_client.status()
+    if not st.get("ready"):
+        return _err(f"WhatsApp bridge не готов: {st.get('error') or 'не авторизован'}")
+    matches = whatsapp_client.find_chats(chat_query)
+    if not matches:
+        return _err(
+            f"Не нашёл в WhatsApp чат с «{chat_query}». "
+            f"Скажи точнее или попроси whatsapp_list_groups."
+        )
+    if len(matches) > 1:
+        lines = [f"Несколько совпадений с «{chat_query}»:"]
+        for m in matches[:5]:
+            lines.append(f"  • {m['name']} (`{m['id']}`)")
+        lines.append("Уточни какой именно (по полному названию).")
+        return _err("\n".join(lines))
+    chat = matches[0]
+    ok, msg = whatsapp_client.send_to_chat(chat["id"], message)
+    if ok:
+        return _ok(f"💬 Отправлено в WhatsApp: «{chat['name']}»")
+    return _err(f"WhatsApp: {msg}")
+
+
 # ─── record_completed_task (retroactive logging) ─────────────────────────────
 
 def record_completed_task(
@@ -732,6 +784,34 @@ TOOL_SCHEMAS = [
         "input_schema": {"type": "object", "properties": {}},
     },
     {
+        "name": "whatsapp_review_unread",
+        "description": (
+            "Fetch all unread WhatsApp chats with their recent message history. "
+            "Use this when the user asks 'что в вотсапе?', 'проверь сообщения', "
+            "'что мне ответить', 'есть ли что важное в чатах'. The result includes "
+            "sender names + message texts; the agent should analyze them and "
+            "recommend reply priorities + draft replies."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "whatsapp_send_to_any",
+        "description": (
+            "Send a WhatsApp message to ANY chat by fuzzy-searching its name "
+            "(chat_query). Use this when the user names a chat/contact NOT in "
+            "whatsapp_groups.json — e.g. 'напиши маме что задерживаюсь'. "
+            "If multiple chats match, you'll get a disambiguation prompt."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "chat_query": {"type": "string", "description": "Part of the chat/contact name"},
+                "message": {"type": "string"},
+            },
+            "required": ["chat_query", "message"],
+        },
+    },
+    {
         "name": "record_completed_task",
         "description": (
             "Log an unplanned task that the user already completed today. Use this "
@@ -831,6 +911,8 @@ TOOL_FUNCS = {
     "record_completed_task": record_completed_task,
     "whatsapp_send_group": whatsapp_send_group,
     "whatsapp_list_groups": whatsapp_list_groups,
+    "whatsapp_review_unread": whatsapp_review_unread,
+    "whatsapp_send_to_any": whatsapp_send_to_any,
     "schedule_action": schedule_action,
     "list_scheduled_actions": list_scheduled_actions,
     "cancel_scheduled_action": cancel_scheduled_action,

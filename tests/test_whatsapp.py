@@ -172,6 +172,89 @@ def test_tool_list_groups_populated():
 
 def test_tool_schemas_registered():
     schema_names = {s["name"] for s in tools.TOOL_SCHEMAS}
-    for name in ("whatsapp_send_group", "whatsapp_list_groups"):
+    for name in ("whatsapp_send_group", "whatsapp_list_groups",
+                 "whatsapp_review_unread", "whatsapp_send_to_any"):
         assert name in schema_names
         assert name in tools.TOOL_FUNCS
+
+
+# ─── unread + review ─────────────────────────────────────────────────────────
+
+def test_unread_chats_success():
+    payload = {"chats": [
+        {"id": "120363@g.us", "name": "Семья", "unreadCount": 3,
+         "recentMessages": [{"senderName": "Аня", "text": "позвони", "fromMe": False, "ts": 1}]},
+    ]}
+    with patch("requests.get", return_value=_mock_resp(200, payload)):
+        chats = whatsapp_client.unread_chats()
+    assert len(chats) == 1
+    assert chats[0]["unreadCount"] == 3
+
+
+def test_tool_review_unread_empty():
+    with patch("whatsapp_client.status", return_value={"ready": True}), \
+         patch("whatsapp_client.unread_chats", return_value=[]):
+        r = tools.whatsapp_review_unread()
+    assert r["status"] == "ok"
+    assert "нет" in r["summary"].lower()
+
+
+def test_tool_review_unread_with_chats():
+    chats = [{
+        "id": "120363@g.us", "name": "Семья", "unreadCount": 2,
+        "recentMessages": [
+            {"senderName": "Мама", "text": "когда придёшь?", "fromMe": False, "ts": 1},
+            {"senderName": None, "text": "ok", "fromMe": True, "ts": 2},
+        ]
+    }]
+    with patch("whatsapp_client.status", return_value={"ready": True}), \
+         patch("whatsapp_client.unread_chats", return_value=chats):
+        r = tools.whatsapp_review_unread()
+    assert "Семья" in r["summary"]
+    assert "Мама" in r["summary"]
+    assert "когда придёшь" in r["summary"]
+
+
+def test_tool_review_unread_bridge_down():
+    with patch("whatsapp_client.status", return_value={"ready": False, "error": "no_qr"}):
+        r = tools.whatsapp_review_unread()
+    assert r["status"] == "error"
+
+
+# ─── send to any (fuzzy search) ──────────────────────────────────────────────
+
+def test_find_chats_returns_matches():
+    with patch("requests.post", return_value=_mock_resp(200, {
+        "matches": [{"id": "120363@g.us", "name": "Мама и я"}]
+    })):
+        matches = whatsapp_client.find_chats("мама")
+    assert matches[0]["name"] == "Мама и я"
+
+
+def test_tool_send_to_any_single_match():
+    matches = [{"id": "120363@g.us", "name": "Мама"}]
+    with patch("whatsapp_client.status", return_value={"ready": True}), \
+         patch("whatsapp_client.find_chats", return_value=matches), \
+         patch("whatsapp_client.send_to_chat", return_value=(True, "ok")):
+        r = tools.whatsapp_send_to_any(chat_query="мама", message="привет")
+    assert r["status"] == "ok"
+    assert "Мама" in r["summary"]
+
+
+def test_tool_send_to_any_no_match():
+    with patch("whatsapp_client.status", return_value={"ready": True}), \
+         patch("whatsapp_client.find_chats", return_value=[]):
+        r = tools.whatsapp_send_to_any(chat_query="никого", message="hi")
+    assert r["status"] == "error"
+
+
+def test_tool_send_to_any_ambiguous():
+    matches = [
+        {"id": "1@g.us", "name": "Семья мамы"},
+        {"id": "2@g.us", "name": "Семья папы"},
+    ]
+    with patch("whatsapp_client.status", return_value={"ready": True}), \
+         patch("whatsapp_client.find_chats", return_value=matches):
+        r = tools.whatsapp_send_to_any(chat_query="семья", message="hi")
+    assert r["status"] == "error"
+    assert "Уточни" in r["summary"]

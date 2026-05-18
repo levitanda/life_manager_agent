@@ -81,6 +81,38 @@ def list_groups() -> list[dict]:
         return []
 
 
+def unread_chats() -> list[dict]:
+    """Return chats with unread messages, each with up to 15 recent messages."""
+    try:
+        r = requests.get(f"{BRIDGE_URL}/unread", timeout=15)
+        r.raise_for_status()
+        return r.json().get("chats", [])
+    except Exception as e:
+        logger.warning("WhatsApp unread_chats failed: %s", e)
+        return []
+
+
+def get_chat_messages(chat_id: str, limit: int = 20) -> list[dict]:
+    try:
+        r = requests.get(f"{BRIDGE_URL}/chat/{chat_id}/messages", params={"limit": limit}, timeout=10)
+        r.raise_for_status()
+        return r.json().get("messages", [])
+    except Exception as e:
+        logger.warning("WhatsApp get_messages failed: %s", e)
+        return []
+
+
+def find_chats(query: str) -> list[dict]:
+    """Fuzzy search by chat name (groups + 1-on-1 contacts the bridge knows)."""
+    try:
+        r = requests.post(f"{BRIDGE_URL}/find", json={"query": query}, timeout=10)
+        r.raise_for_status()
+        return r.json().get("matches", [])
+    except Exception as e:
+        logger.warning("WhatsApp find_chats failed: %s", e)
+        return []
+
+
 def send_to_chat(chat_id: str, text: str) -> tuple[bool, str]:
     try:
         r = requests.post(
