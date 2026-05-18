@@ -399,31 +399,24 @@ def whatsapp_list_groups(**_kwargs) -> dict:
     return _ok("\n".join(lines))
 
 
-def whatsapp_review_unread(*, limit: int = 50, **_kwargs) -> dict:
-    """Review chats that need a reply.
+def whatsapp_review_unread(**_kwargs) -> dict:
+    """Fetch all unread WhatsApp chats with recent message context for review.
 
-    Logic: take last `limit` chats by activity, filter to those where the
-    LAST message is not from the user (i.e., user hasn't replied yet).
+    The agent uses this to summarize what's been said and suggest responses.
     """
     st = whatsapp_client.status()
     if not st.get("ready"):
         return _err(f"WhatsApp bridge не готов: {st.get('error') or 'не авторизован'}")
-
-    chats = whatsapp_client.recent_chats(limit=limit)
+    chats = whatsapp_client.unread_chats()
     if not chats:
-        return _ok("Нет недавней активности в WhatsApp.")
+        return _ok("В WhatsApp нет непрочитанных сообщений.")
 
-    needs_attention = [c for c in chats if c.get("lastFromMe") is False]
-    if not needs_attention:
-        return _ok(f"Просмотрено {len(chats)} последних чатов — ответ нигде не требуется.")
-
-    blocks = [f"💬 *Ожидают твоего ответа ({len(needs_attention)} из последних {len(chats)} чатов):*"]
-    for chat in needs_attention:
+    blocks = [f"💬 *Непрочитанные WhatsApp ({len(chats)} чатов):*"]
+    for chat in chats:
         name = chat.get("name") or chat["id"]
-        unread = chat.get("unreadCount", 0)
-        unread_str = f" [{unread} нов.]" if unread > 0 else ""
-        blocks.append(f"\n*{name}*{unread_str}:")
-        for m in chat.get("recentMessages", [])[-8:]:
+        n = chat.get("unreadCount", 0)
+        blocks.append(f"\n*{name}* — {n} нов.:")
+        for m in chat.get("recentMessages", [])[-10:]:
             sender = m.get("senderName") or ("я" if m.get("fromMe") else "?")
             text = (m.get("text") or "")[:240]
             prefix = "→" if m.get("fromMe") else "·"
@@ -817,20 +810,13 @@ TOOL_SCHEMAS = [
     {
         "name": "whatsapp_review_unread",
         "description": (
-            "Review WhatsApp activity across the last N chats (default 50). "
-            "Returns chats where the latest message is NOT from the user — "
-            "meaning these are conversations waiting for a reply. Each chat "
-            "includes its recent message context (sender + text), so the agent "
-            "can analyze them and recommend reply priorities + draft replies. "
-            "Use this when user asks 'что в вотсапе?', 'проверь сообщения', "
-            "'что мне ответить', 'есть ли что важное'."
+            "Fetch all unread WhatsApp chats with their recent message history. "
+            "Use this when the user asks 'что в вотсапе?', 'проверь сообщения', "
+            "'что мне ответить', 'есть ли что важное в чатах'. The result includes "
+            "sender names + message texts; the agent should analyze them and "
+            "recommend reply priorities + draft replies."
         ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "limit": {"type": "integer", "default": 50, "description": "How many recent chats to scan"},
-            },
-        },
+        "input_schema": {"type": "object", "properties": {}},
     },
     {
         "name": "whatsapp_send_to_any",

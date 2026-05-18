@@ -696,15 +696,7 @@ async def _send_morning_digest(app: Application, target_date: datetime.date | No
             birthdays = birthday_client.get_todays_birthdays() if is_today else []
             recent_msgs = conversation.get_history()
             summaries = conversation.get_recent_summaries()
-            # Use recent_chats with lastFromMe=False filter — more reliable than
-            # Baileys' fragile unreadCount across restarts.
-            wa_unread = []
-            if is_today:
-                try:
-                    recent = whatsapp_client.recent_chats(limit=50, messages_per_chat=8)
-                    wa_unread = [c for c in recent if c.get("lastFromMe") is False]
-                except Exception as e:
-                    logger.warning("WhatsApp digest fetch failed: %s", e)
+            wa_unread = whatsapp_client.unread_chats() if is_today else []
 
             text = digest_module.generate_morning_digest(
                 events, short, long_, yesterday, emails, target_date, weather,

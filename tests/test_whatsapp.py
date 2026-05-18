@@ -193,55 +193,26 @@ def test_unread_chats_success():
 
 def test_tool_review_unread_empty():
     with patch("whatsapp_client.status", return_value={"ready": True}), \
-         patch("whatsapp_client.recent_chats", return_value=[]):
+         patch("whatsapp_client.unread_chats", return_value=[]):
         r = tools.whatsapp_review_unread()
     assert r["status"] == "ok"
     assert "нет" in r["summary"].lower()
 
 
-def test_tool_review_unread_filters_lastFromMe():
-    """Only chats where the user hasn't replied (lastFromMe=False) should appear."""
-    chats = [
-        {  # Waiting for reply
-            "id": "120363@g.us", "name": "Семья", "unreadCount": 2,
-            "lastFromMe": False,
-            "recentMessages": [
-                {"senderName": "Мама", "text": "когда придёшь?", "fromMe": False, "ts": 1},
-            ]
-        },
-        {  # Already replied — should be excluded
-            "id": "120364@g.us", "name": "Работа",
-            "lastFromMe": True,
-            "recentMessages": [
-                {"senderName": "Я", "text": "ok", "fromMe": True, "ts": 2},
-            ]
-        },
-    ]
+def test_tool_review_unread_with_chats():
+    chats = [{
+        "id": "120363@g.us", "name": "Семья", "unreadCount": 2,
+        "recentMessages": [
+            {"senderName": "Мама", "text": "когда придёшь?", "fromMe": False, "ts": 1},
+            {"senderName": None, "text": "ok", "fromMe": True, "ts": 2},
+        ]
+    }]
     with patch("whatsapp_client.status", return_value={"ready": True}), \
-         patch("whatsapp_client.recent_chats", return_value=chats):
+         patch("whatsapp_client.unread_chats", return_value=chats):
         r = tools.whatsapp_review_unread()
     assert "Семья" in r["summary"]
-    assert "Работа" not in r["summary"]
+    assert "Мама" in r["summary"]
     assert "когда придёшь" in r["summary"]
-
-
-def test_tool_review_unread_nothing_to_reply():
-    """All recent chats have user's reply as last message → nothing to do."""
-    chats = [
-        {"id": "1@g.us", "name": "X", "lastFromMe": True, "recentMessages": []},
-    ]
-    with patch("whatsapp_client.status", return_value={"ready": True}), \
-         patch("whatsapp_client.recent_chats", return_value=chats):
-        r = tools.whatsapp_review_unread()
-    assert "не требуется" in r["summary"].lower()
-
-
-def test_recent_chats_client():
-    payload = {"chats": [{"id": "x", "name": "Y", "lastFromMe": False, "recentMessages": []}]}
-    with patch("requests.get", return_value=_mock_resp(200, payload)):
-        chats = whatsapp_client.recent_chats(limit=50)
-    assert len(chats) == 1
-    assert chats[0]["lastFromMe"] is False
 
 
 def test_tool_review_unread_bridge_down():

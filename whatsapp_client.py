@@ -82,32 +82,13 @@ def list_groups() -> list[dict]:
 
 
 def unread_chats() -> list[dict]:
-    """Baileys 'true' unread (chats with unreadCount>0). Only counts what
-    arrived while the bridge was running, so often returns less than expected."""
+    """Return chats with unread messages, each with up to 15 recent messages."""
     try:
         r = requests.get(f"{BRIDGE_URL}/unread", timeout=15)
         r.raise_for_status()
         return r.json().get("chats", [])
     except Exception as e:
         logger.warning("WhatsApp unread_chats failed: %s", e)
-        return []
-
-
-def recent_chats(limit: int = 50, messages_per_chat: int = 10) -> list[dict]:
-    """Top N chats by recent activity, each with their last `messages_per_chat`
-    messages. Each chat has `lastFromMe` so callers can filter to ones that
-    need a reply.
-    """
-    try:
-        r = requests.get(
-            f"{BRIDGE_URL}/recent",
-            params={"limit": limit, "messages_per_chat": messages_per_chat},
-            timeout=20,
-        )
-        r.raise_for_status()
-        return r.json().get("chats", [])
-    except Exception as e:
-        logger.warning("WhatsApp recent_chats failed: %s", e)
         return []
 
 
