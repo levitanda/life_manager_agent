@@ -11,20 +11,37 @@ import tools
 
 # ─── client: registry loading ────────────────────────────────────────────────
 
-def test_load_group_registry_missing_file(tmp_path, monkeypatch):
+def test_load_registry_missing_file(tmp_path, monkeypatch):
     monkeypatch.setattr(whatsapp_client, "GROUPS_FILE", tmp_path / "missing.json")
-    assert whatsapp_client._load_group_registry() == {}
+    assert whatsapp_client._load_registry() == {}
 
 
-def test_load_group_registry_valid(tmp_path, monkeypatch):
+def test_load_registry_flat_format(tmp_path, monkeypatch):
     p = tmp_path / "g.json"
     p.write_text(json.dumps({"семья": "120363@g.us", "Покупки": "120364@g.us"}), encoding="utf-8")
     monkeypatch.setattr(whatsapp_client, "GROUPS_FILE", p)
-    reg = whatsapp_client._load_group_registry()
-    # keys lowercased
+    reg = whatsapp_client._load_registry()
     assert "семья" in reg
     assert "покупки" in reg
-    assert reg["покупки"] == "120364@g.us"
+    assert reg["покупки"]["chat_id"] == "120364@g.us"
+
+
+def test_load_registry_rich_format_with_aliases(tmp_path, monkeypatch):
+    p = tmp_path / "g.json"
+    p.write_text(json.dumps({
+        "женя": {
+            "chat_id": "972501234567@s.whatsapp.net",
+            "signature": "— Личный ассистент Дарьи",
+            "aliases": ["муж", "Жене"]
+        }
+    }), encoding="utf-8")
+    monkeypatch.setattr(whatsapp_client, "GROUPS_FILE", p)
+    reg = whatsapp_client._load_registry()
+    assert "женя" in reg
+    assert "муж" in reg
+    assert "жене" in reg  # alias normalized
+    assert reg["муж"]["chat_id"] == "972501234567@s.whatsapp.net"
+    assert reg["муж"]["signature"] == "— Личный ассистент Дарьи"
 
 
 # ─── client: HTTP wrappers ───────────────────────────────────────────────────
@@ -78,34 +95,53 @@ def test_send_to_chat_bridge_error():
     assert "not_ready" in msg
 
 
-def test_send_to_group_by_name_unknown(tmp_path, monkeypatch):
+def test_send_to_name_unknown(tmp_path, monkeypatch):
     monkeypatch.setattr(whatsapp_client, "GROUPS_FILE", tmp_path / "g.json")
-    ok, msg = whatsapp_client.send_to_group_by_name("несуществующая", "hi")
+    ok, msg = whatsapp_client.send_to_name("несуществующая", "hi")
     assert ok is False
-    assert "не настроена" in msg
+    assert "не настроено" in msg
 
 
-def test_send_to_group_by_name_known(tmp_path, monkeypatch):
+def test_send_to_name_flat_format(tmp_path, monkeypatch):
     p = tmp_path / "g.json"
     p.write_text(json.dumps({"покупки": "120363@g.us"}), encoding="utf-8")
     monkeypatch.setattr(whatsapp_client, "GROUPS_FILE", p)
     with patch("requests.post", return_value=_mock_resp(200, {"ok": True})) as mp:
-        ok, msg = whatsapp_client.send_to_group_by_name("Покупки", "молоко")
+        ok, msg = whatsapp_client.send_to_name("Покупки", "молоко")
     assert ok is True
-    sent_chat = mp.call_args.kwargs["json"]["chatId"]
-    assert sent_chat == "120363@g.us"
+    sent = mp.call_args.kwargs["json"]
+    assert sent["chatId"] == "120363@g.us"
+    assert sent["text"] == "молоко"
+
+
+def test_send_to_name_appends_signature(tmp_path, monkeypatch):
+    p = tmp_path / "g.json"
+    p.write_text(json.dumps({
+        "женя": {
+            "chat_id": "972501234567@s.whatsapp.net",
+            "signature": "— Личный ассистент Дарьи",
+            "aliases": ["муж"]
+        }
+    }), encoding="utf-8")
+    monkeypatch.setattr(whatsapp_client, "GROUPS_FILE", p)
+    with patch("requests.post", return_value=_mock_resp(200, {"ok": True})) as mp:
+        ok, _ = whatsapp_client.send_to_name("муж", "буду через час")
+    assert ok is True
+    sent = mp.call_args.kwargs["json"]
+    assert "буду через час" in sent["text"]
+    assert "— Личный ассистент Дарьи" in sent["text"]
 
 
 # ─── tool layer ──────────────────────────────────────────────────────────────
 
-def test_tool_send_group_success():
-    with patch("whatsapp_client.send_to_group_by_name", return_value=(True, "Отправлено")):
+def test_tool_send_success():
+    with patch("whatsapp_client.send_to_name", return_value=(True, "Отправлено")):
         r = tools.whatsapp_send_group(group_name="покупки", message="молоко")
     assert r["status"] == "ok"
 
 
-def test_tool_send_group_failure():
-    with patch("whatsapp_client.send_to_group_by_name", return_value=(False, "не настроена")):
+def test_tool_send_failure():
+    with patch("whatsapp_client.send_to_name", return_value=(False, "не настроено")):
         r = tools.whatsapp_send_group(group_name="bogus", message="hi")
     assert r["status"] == "error"
 

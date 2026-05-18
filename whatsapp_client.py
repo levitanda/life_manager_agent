@@ -2,12 +2,24 @@
 
 The bridge is a Node.js sidecar (whatsapp_bridge/server.js) that maintains
 a persistent WhatsApp session and exposes a tiny REST API on 127.0.0.1.
+
+Registry file `whatsapp_groups.json` supports both flat and rich format:
+
+  {
+    "покупки": "120363047599035994@g.us",          ← flat (chatId only)
+    "женя": {                                      ← rich
+      "chat_id": "972501234567@s.whatsapp.net",
+      "signature": "— Личный ассистент Дарьи",
+      "aliases": ["муж", "жене"]
+    }
+  }
 """
 
 import json
 import logging
 import os
 from pathlib import Path
+from typing import Optional
 
 import requests
 
@@ -17,16 +29,37 @@ BRIDGE_URL = os.environ.get("WHATSAPP_BRIDGE_URL", "http://127.0.0.1:3030")
 GROUPS_FILE = Path(__file__).parent / "whatsapp_groups.json"
 
 
-def _load_group_registry() -> dict:
-    """Friendly-name → chatId mapping stored locally so the user can use short names."""
+def _normalize_entry(value) -> dict:
+    """Convert flat string format into a dict, leave dict as-is."""
+    if isinstance(value, str):
+        return {"chat_id": value}
+    if isinstance(value, dict):
+        return value
+    return {}
+
+
+def _load_registry() -> dict:
+    """Returns {name_lower: {chat_id, signature?, aliases?}} from whatsapp_groups.json.
+    Aliases are also indexed under their own lowercase keys.
+    """
     if not GROUPS_FILE.exists():
         return {}
     try:
-        data = json.loads(GROUPS_FILE.read_text(encoding="utf-8"))
-        return {k.lower(): v for k, v in data.items()}
+        raw = json.loads(GROUPS_FILE.read_text(encoding="utf-8"))
     except Exception as e:
         logger.warning("whatsapp_groups.json load failed: %s", e)
         return {}
+
+    registry: dict = {}
+    for name, value in raw.items():
+        entry = _normalize_entry(value)
+        if not entry.get("chat_id"):
+            continue
+        key = name.lower().strip()
+        registry[key] = entry
+        for alias in entry.get("aliases", []):
+            registry[alias.lower().strip()] = entry
+    return registry
 
 
 def status() -> dict:
@@ -67,14 +100,17 @@ def send_to_chat(chat_id: str, text: str) -> tuple[bool, str]:
         return False, str(e)
 
 
-def send_to_group_by_name(group_name: str, text: str) -> tuple[bool, str]:
-    """Resolve a friendly name from the registry, then send."""
-    registry = _load_group_registry()
-    chat_id = registry.get(group_name.lower().strip())
-    if not chat_id:
+def send_to_name(name: str, text: str) -> tuple[bool, str]:
+    """Resolve a friendly name (or alias) and send. Appends configured signature."""
+    registry = _load_registry()
+    entry = registry.get(name.lower().strip())
+    if not entry:
         return (
             False,
-            f"Группа «{group_name}» не настроена. Добавь её id в whatsapp_groups.json "
-            f"(используй whatsapp_list_groups чтобы получить id).",
+            f"«{name}» не настроено в whatsapp_groups.json. Используй whatsapp_list_groups чтобы найти id.",
         )
-    return send_to_chat(chat_id, text)
+    full_text = text
+    sig = entry.get("signature")
+    if sig:
+        full_text = f"{text}\n\n{sig}"
+    return send_to_chat(entry["chat_id"], full_text)

@@ -372,10 +372,14 @@ def smart_home_set_mode(*, device_name: str, mode: str, **_kwargs) -> dict:
 # ─── WhatsApp (via Baileys bridge) ───────────────────────────────────────────
 
 def whatsapp_send_group(*, group_name: str, message: str, **_kwargs) -> dict:
-    """Send a message to a WhatsApp group by its friendly name from whatsapp_groups.json."""
-    ok, msg = whatsapp_client.send_to_group_by_name(group_name, message)
+    """Send a message to a WhatsApp chat (group OR personal contact) by friendly name.
+
+    The friendly name comes from whatsapp_groups.json, which may include
+    aliases and a configured signature (appended automatically).
+    """
+    ok, msg = whatsapp_client.send_to_name(group_name, message)
     if ok:
-        return _ok(f"💬 Отправлено в WhatsApp группу «{group_name}»")
+        return _ok(f"💬 Отправлено в WhatsApp: «{group_name}»")
     return _err(f"WhatsApp: {msg}")
 
 
@@ -707,15 +711,16 @@ TOOL_SCHEMAS = [
     {
         "name": "whatsapp_send_group",
         "description": (
-            "Send a text message to a configured WhatsApp group. Use group_name "
-            "(friendly name, e.g. 'покупки', 'семья') that maps to a chatId in "
-            "whatsapp_groups.json. If user asks to message a group that isn't "
-            "configured, call whatsapp_list_groups first to find its id."
+            "Send a WhatsApp message to a configured chat — can be either a group "
+            "OR a personal contact. Use the friendly name from whatsapp_groups.json "
+            "(e.g. 'покупки', 'женя', 'муж'). Signatures are applied automatically "
+            "where configured (no need to add them in the message text). "
+            "Match user phrasing flexibly: «напиши Жене» / «отправь мужу» / «в группу покупки»."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "group_name": {"type": "string", "description": "Friendly group name from whatsapp_groups.json"},
+                "group_name": {"type": "string", "description": "Friendly name or alias from whatsapp_groups.json"},
                 "message": {"type": "string"},
             },
             "required": ["group_name", "message"],
