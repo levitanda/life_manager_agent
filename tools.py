@@ -22,6 +22,7 @@ import contacts_client
 import scheduled_actions
 import smart_home
 import weather_client
+import whatsapp_client
 
 logger = logging.getLogger(__name__)
 
@@ -368,6 +369,32 @@ def smart_home_set_mode(*, device_name: str, mode: str, **_kwargs) -> dict:
     return _ok(f"⚙️ {msg}") if ok else _err(msg)
 
 
+# ─── WhatsApp (via Baileys bridge) ───────────────────────────────────────────
+
+def whatsapp_send_group(*, group_name: str, message: str, **_kwargs) -> dict:
+    """Send a message to a WhatsApp group by its friendly name from whatsapp_groups.json."""
+    ok, msg = whatsapp_client.send_to_group_by_name(group_name, message)
+    if ok:
+        return _ok(f"💬 Отправлено в WhatsApp группу «{group_name}»")
+    return _err(f"WhatsApp: {msg}")
+
+
+def whatsapp_list_groups(**_kwargs) -> dict:
+    """List all WhatsApp groups visible to the bridge."""
+    st = whatsapp_client.status()
+    if not st.get("ready"):
+        err = st.get("error") or "не авторизован"
+        return _err(f"WhatsApp bridge не готов: {err}. Проверь сервис и QR.")
+    groups = whatsapp_client.list_groups()
+    if not groups:
+        return _ok("Групп не найдено.")
+    lines = ["💬 *WhatsApp группы:*"]
+    for g in groups:
+        lines.append(f"  • {g['name']} — `{g['id']}` ({g.get('size', 0)} участ.)")
+    lines.append("\nЧтобы использовать по короткому имени — добавь id в `whatsapp_groups.json`.")
+    return _ok("\n".join(lines))
+
+
 # ─── record_completed_task (retroactive logging) ─────────────────────────────
 
 def record_completed_task(
@@ -678,6 +705,28 @@ TOOL_SCHEMAS = [
         },
     },
     {
+        "name": "whatsapp_send_group",
+        "description": (
+            "Send a text message to a configured WhatsApp group. Use group_name "
+            "(friendly name, e.g. 'покупки', 'семья') that maps to a chatId in "
+            "whatsapp_groups.json. If user asks to message a group that isn't "
+            "configured, call whatsapp_list_groups first to find its id."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "group_name": {"type": "string", "description": "Friendly group name from whatsapp_groups.json"},
+                "message": {"type": "string"},
+            },
+            "required": ["group_name", "message"],
+        },
+    },
+    {
+        "name": "whatsapp_list_groups",
+        "description": "List all WhatsApp groups the bridge can see — returns names and chatIds.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
         "name": "record_completed_task",
         "description": (
             "Log an unplanned task that the user already completed today. Use this "
@@ -775,6 +824,8 @@ TOOL_FUNCS = {
     "smart_home_set_fan_speed": smart_home_set_fan_speed,
     "smart_home_set_mode": smart_home_set_mode,
     "record_completed_task": record_completed_task,
+    "whatsapp_send_group": whatsapp_send_group,
+    "whatsapp_list_groups": whatsapp_list_groups,
     "schedule_action": schedule_action,
     "list_scheduled_actions": list_scheduled_actions,
     "cancel_scheduled_action": cancel_scheduled_action,
