@@ -1,0 +1,17 @@
+[Unit]
+Description=Life Agent A2A Server (Agent2Agent protocol)
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/life-agent
+ExecStart=/home/ubuntu/life-agent/venv/bin/python3 a2a_server.py serve
+Restart=on-failure
+RestartSec=5
+EnvironmentFile=/home/ubuntu/life-agent/.env
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

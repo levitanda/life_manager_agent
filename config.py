@@ -20,6 +20,10 @@ ALICE_PORT = int(os.environ.get("ALICE_PORT", "5000"))
 ALICE_DIGEST_FILE = "last_digest.txt"
 ALICE_MESSAGE_FILE = "pending_alice_message.txt"
 
+A2A_PORT = int(os.environ.get("A2A_PORT", "5001"))
+A2A_AGENT_NAME = os.environ.get("A2A_AGENT_NAME", "Daria's Life Agent")
+A2A_AGENT_URL = os.environ.get("A2A_AGENT_URL", "")  # set after Cloudflare tunnel is up
+
 GOOGLE_CREDENTIALS_FILE = "google_credentials.json"
 GOOGLE_TOKEN_FILE = "google_token.json"
 

@@ -6,6 +6,29 @@
 
 ## Май 2026 — Sci-fi roadmap
 
+### A2A (Agent2Agent): сервер для внешних агентов + клиент для каталогов
+- **Файлы:** `a2a_server.py`, `a2a_client.py`, `life-agent-a2a.service`, `tests/test_a2a_*.py`
+- **Что это:** реализация Google's open A2A protocol — позволяет твоему боту общаться с другими агентами как сервер и как клиент.
+- **A2A Server (inbound, приватный):**
+  - Отдельный Flask-сервис на порту 5001, своя systemd-юнит `life-agent-a2a.service`
+  - Эндпоинты: `GET /.well-known/agent.json` (публичная карта), `POST /a2a/tasks/send` (auth), `GET /a2a/health`
+  - **Авторизация Bearer-токеном**, ключи в `a2a_clients.json` хранятся только как sha256-хэши
+  - **Жёсткий read-only allow-list:** `show_tasks`, `get_weather`, `find_free_time`, `list_scheduled_actions`. Даже если у клиента в `allowed_tools` написано `send_email` — сервер откажет
+  - **CLI для управления клиентами:** `python a2a_server.py add-client --name "Husband's agent" --tools find_free_time,show_tasks` → генерит API-ключ (показывается один раз)
+  - Переиспользует существующие `tools.TOOL_SCHEMAS`/`TOOL_FUNCS`, params валидируются jsonschema
+- **A2A Client (outbound, через каталоги):**
+  - `a2a_client.py` — HTTP-клиент с persistent registry в `a2a_agents.json`
+  - **4 новых tool'а:** `a2a_discover`, `a2a_list_known_agents`, `a2a_call_agent`, `a2a_remove_agent`
+  - Известные каталоги (в tool description для Claude): `a2a.dev`, `smithery.ai`, `agentcommerce.io`, `agentnetwork.io`
+- **Use cases для catalog agents** (Claude знает из schema):
+  - Coordination с агентом мужа/мамы — координация календарей
+  - Deep research (Perplexity-style)
+  - Booking ресторанов / билетов / отелей
+  - Comparison shopping, медицина, право, перевод
+  - Code generation, travel planning, переговоры
+- **Безопасность:** raw API keys никогда не лежат на диске (только sha256). Файл `a2a_clients.json` с правами `0o600`. Unknown tools → 403, не 500.
+- **Тесты:** 34 новых, 181 всего проходит.
+
 ### Перенос ЛЮБОГО события из календаря по названию
 - **Файлы:** `calendar_client.py` (новая функция `find_event_by_title`), `tools.py`, `tests/test_calendar_client.py`, `tests/test_bot_handlers.py`
 - **Что починили:** Раньше `reschedule_task` работал только с задачами в task-календарях (нужен был task_number). Если пользователь говорил «перенеси встречу с Леонелем» — бот отвечал «у меня нет доступа к календарю». Теперь tool принимает либо `task_number`, либо `event_title` — fuzzy substring search по primary calendar + task calendars.

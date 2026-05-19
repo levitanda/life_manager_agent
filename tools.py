@@ -11,11 +11,13 @@ Destructive tools (send_email, delete_task, reschedule_task) return
 """
 
 import datetime
+import json
 import logging
 from typing import Optional
 
 import pytz
 
+import a2a_client
 import calendar_client
 import config
 import contacts_client
@@ -524,6 +526,60 @@ def record_completed_task(
         return _err(f"Не удалось записать: {e}")
 
 
+# ─── A2A (Agent2Agent) — calling external agents ─────────────────────────────
+
+def a2a_list_known_agents(**_kwargs) -> dict:
+    """List external A2A agents that have been registered locally."""
+    agents = a2a_client.list_known_agents()
+    if not agents:
+        return _ok(
+            "Внешних A2A-агентов пока не зарегистрировано. "
+            "Используй a2a_discover чтобы добавить — например по URL из каталога "
+            "a2a.dev, smithery.ai или agentcommerce.io."
+        )
+    lines = ["🤖 *Зарегистрированные A2A-агенты:*"]
+    for a in agents:
+        desc = a.get("description") or "—"
+        skills = a.get("skill_ids") or []
+        lines.append(f"  • *{a['name']}* — {desc[:120]}")
+        if skills:
+            lines.append(f"    умеет: {', '.join(skills[:6])}")
+    return _ok("\n".join(lines))
+
+
+def a2a_discover(*, url: str, friendly_name: Optional[str] = None,
+                 api_key: Optional[str] = None, **_kwargs) -> dict:
+    """Fetch Agent Card from a remote A2A server and save under friendly_name."""
+    ok, payload = a2a_client.discover_agent(url, friendly_name, api_key)
+    if not ok:
+        return _err(f"A2A discovery: {payload}")
+    return _ok(
+        f"🤖 Зарегистрировал агента «{payload['registered_as']}» — "
+        f"{payload.get('agent_name')}. Умеет: {', '.join(payload.get('skills') or []) or '?'}"
+    )
+
+
+def a2a_call_agent(*, agent_name: str, tool: str,
+                   params: Optional[dict] = None, **_kwargs) -> dict:
+    """Send a task to a registered A2A agent."""
+    ok, payload = a2a_client.call_agent(agent_name, tool, params or {})
+    if not ok:
+        return _err(f"A2A call: {payload}")
+    # Extract textual representation from result
+    result = payload.get("result") if isinstance(payload, dict) else None
+    if isinstance(result, dict):
+        summary = result.get("summary") or json.dumps(result, ensure_ascii=False)[:600]
+    else:
+        summary = str(result)[:600]
+    return _ok(f"🤖 [{agent_name}] {summary}")
+
+
+def a2a_remove_agent(*, name: str, **_kwargs) -> dict:
+    """Delete a registered A2A agent from the local registry."""
+    ok, msg = a2a_client.remove_agent(name)
+    return _ok(f"🗑 {msg}") if ok else _err(msg)
+
+
 # ─── Scheduled actions (delayed / recurring flows) ───────────────────────────
 
 def schedule_action(
@@ -857,6 +913,63 @@ TOOL_SCHEMAS = [
         },
     },
     {
+        "name": "a2a_list_known_agents",
+        "description": (
+            "List external A2A-compatible agents the user has registered locally. "
+            "Each entry has a friendly name, URL, what it does, and which skills it offers."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "a2a_discover",
+        "description": (
+            "Register a new external A2A agent by fetching its public Agent Card "
+            "from /.well-known/agent.json. Use when the user gives a URL of an agent "
+            "they want to use (from catalogs like a2a.dev, smithery.ai, "
+            "agentcommerce.io, or directly from another person). If the remote "
+            "requires authentication, pass api_key."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "Base URL of the remote A2A agent"},
+                "friendly_name": {"type": "string", "description": "Short local alias"},
+                "api_key": {"type": "string", "description": "Bearer token if the remote requires it"},
+            },
+            "required": ["url"],
+        },
+    },
+    {
+        "name": "a2a_call_agent",
+        "description": (
+            "Delegate a specific task to a registered external A2A agent. "
+            "Use this whenever the task is outside this bot's own tools — "
+            "examples: deep web research → research agent; restaurant booking → "
+            "booking agent; spouse's schedule → spouse's agent; specialized "
+            "translation/medical/legal questions → relevant vertical agent. "
+            "If no suitable agent is registered, call a2a_list_known_agents first "
+            "to see what's available."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "agent_name": {"type": "string", "description": "Friendly name from local registry"},
+                "tool": {"type": "string", "description": "Skill id on the remote agent"},
+                "params": {"type": "object", "description": "Params per the remote skill's schema"},
+            },
+            "required": ["agent_name", "tool"],
+        },
+    },
+    {
+        "name": "a2a_remove_agent",
+        "description": "Delete a previously registered external A2A agent.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "required": ["name"],
+        },
+    },
+    {
         "name": "schedule_action",
         "description": (
             "Schedule a natural-language action to execute later. The action_text "
@@ -935,6 +1048,10 @@ TOOL_FUNCS = {
     "smart_home_set_fan_speed": smart_home_set_fan_speed,
     "smart_home_set_mode": smart_home_set_mode,
     "record_completed_task": record_completed_task,
+    "a2a_list_known_agents": a2a_list_known_agents,
+    "a2a_discover": a2a_discover,
+    "a2a_call_agent": a2a_call_agent,
+    "a2a_remove_agent": a2a_remove_agent,
     "whatsapp_send_group": whatsapp_send_group,
     "whatsapp_list_groups": whatsapp_list_groups,
     "whatsapp_review_unread": whatsapp_review_unread,

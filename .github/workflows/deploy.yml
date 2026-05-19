@@ -20,4 +20,5 @@ jobs:
             git pull origin main
             ~/life-agent/venv/bin/pip install --no-cache-dir -r requirements.txt -q
             sudo systemctl restart life-agent
+            sudo systemctl restart life-agent-a2a 2>/dev/null || true
             sudo systemctl is-active life-agent && echo "✅ Deployed successfully"
