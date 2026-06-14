@@ -41,9 +41,9 @@ def mock_calendar_service():
 
 @pytest.fixture
 def mock_birthday_service():
-    """Patch birthday_client.build directly."""
+    """Patch birthday_client._get_service directly (avoids touching real Google auth in CI)."""
     mock_svc = MagicMock()
-    with patch("birthday_client.build", return_value=mock_svc):
+    with patch("birthday_client._get_service", return_value=mock_svc):
         yield mock_svc
 
 
