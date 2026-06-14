@@ -1,0 +1,17 @@
+[Unit]
+Description=life-agent FastAPI sidecar (OAuth/Stripe/Alice webhooks)
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/life-agent
+EnvironmentFile=/home/ubuntu/life-agent/.env
+ExecStart=/home/ubuntu/life-agent/venv/bin/uvicorn web:app --host 127.0.0.1 --port 8000
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
