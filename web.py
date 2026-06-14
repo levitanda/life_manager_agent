@@ -19,6 +19,14 @@ import logging
 import os
 from typing import Optional
 
+# Load .env BEFORE any module reads env vars (MASTER_KEY etc).
+# systemd's EnvironmentFile parser is too strict for keys with special chars
+# like the trailing `=` of base64-encoded Fernet keys; python-dotenv is
+# lenient and reliable.
+from dotenv import load_dotenv
+from pathlib import Path
+load_dotenv(Path(__file__).resolve().parent / ".env")
+
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from itsdangerous import BadSignature, URLSafeTimedSerializer
