@@ -304,14 +304,10 @@ async def _handle_whatsapp(query, user_id: int, parts: list[str], context=None) 
         return
 
     if action == "pair":
-        # Pairing-by-phone-code: spawn bridge, then ask user for phone number.
-        try:
-            whatsapp_supervisor.start_bridge(user_id)
-            _upsert_config(user_id, "whatsapp", {"managed": True}, enabled=False)
-        except Exception as e:
-            logger.exception("WhatsApp bridge start failed: %s", e)
-            await query.edit_message_text(f"⚠️ Не удалось запустить bridge: {e}")
-            return
+        # Pairing-by-phone-code: just record intent; the actual bridge spawn
+        # happens when the user replies with their phone number (so we can
+        # pass BRIDGE_PAIR_PHONE on cold start — required by Baileys).
+        _upsert_config(user_id, "whatsapp", {"managed": True}, enabled=False)
         if context is not None and context.user_data is not None:
             context.user_data["pending_integration"] = "whatsapp_pair"
         await query.edit_message_text(

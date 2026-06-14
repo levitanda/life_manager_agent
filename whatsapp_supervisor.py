@@ -116,27 +116,54 @@ def _get_or_create_row(session, user_id: int):
 # ─── Public API ──────────────────────────────────────────────────────────────
 
 
-def start_bridge(user_id: int) -> int:
-    """Start (or recover) the bridge for a user. Returns the port number."""
+def start_bridge(user_id: int, pair_phone: Optional[str] = None) -> int:
+    """Start (or recover) the bridge for a user. Returns the port number.
+
+    `pair_phone` (digits-only) switches Baileys into pairing-code mode —
+    the bridge must be cold-started (no live process) and the auth_session
+    wiped so Baileys can request a code instead of attempting QR resume.
+    """
     import db
     with db.session_scope() as s:
         row = _get_or_create_row(s, user_id)
         port = int(row.port)
         auth_dir = row.auth_dir
 
-    # Re-use existing live process if we still have it
-    p = _processes.get(user_id)
-    if p is not None and p.poll() is None:
-        logger.info("WA bridge already running for user=%s pid=%s", user_id, p.pid)
-        return port
+    # If pair mode is requested, force a clean slate: kill any live process
+    # and wipe auth state so Baileys takes the "not registered" path.
+    if pair_phone:
+        existing = _processes.pop(user_id, None)
+        if existing is not None and existing.poll() is None:
+            try:
+                os.killpg(os.getpgid(existing.pid), signal.SIGTERM)
+                existing.wait(timeout=3)
+            except Exception:
+                pass
+        try:
+            import shutil
+            shutil.rmtree(auth_dir, ignore_errors=True)
+            Path(auth_dir).mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            logger.warning("auth_dir wipe failed for user=%s: %s", user_id, e)
+    else:
+        # Re-use existing live process if we still have it
+        p = _processes.get(user_id)
+        if p is not None and p.poll() is None:
+            logger.info("WA bridge already running for user=%s pid=%s", user_id, p.pid)
+            return port
 
     log_path = _log_file(user_id)
     log_fp = open(log_path, "a", buffering=1, encoding="utf-8")
-    log_fp.write(f"\n=== {datetime.datetime.utcnow().isoformat()} starting user={user_id} port={port} ===\n")
+    log_fp.write(
+        f"\n=== {datetime.datetime.utcnow().isoformat()} starting user={user_id} "
+        f"port={port} pair={bool(pair_phone)} ===\n"
+    )
     env = os.environ.copy()
     env["BRIDGE_PORT"] = str(port)
     env["WA_AUTH_DIR"] = auth_dir
     env["LOG_LEVEL"] = env.get("WA_LOG_LEVEL", "warn")
+    if pair_phone:
+        env["BRIDGE_PAIR_PHONE"] = "".join(c for c in pair_phone if c.isdigit())
 
     proc = subprocess.Popen(
         [_node_bin(), str(BRIDGE_SCRIPT)],
@@ -144,10 +171,13 @@ def start_bridge(user_id: int) -> int:
         stdout=log_fp,
         stderr=subprocess.STDOUT,
         cwd=str(BRIDGE_SCRIPT.parent),
-        start_new_session=True,  # so we can signal the whole process group
+        start_new_session=True,
     )
     _processes[user_id] = proc
-    logger.info("Started WA bridge user=%s pid=%s port=%s", user_id, proc.pid, port)
+    logger.info(
+        "Started WA bridge user=%s pid=%s port=%s pair=%s",
+        user_id, proc.pid, port, bool(pair_phone),
+    )
 
     with db.session_scope() as s:
         row = s.get(db.WhatsAppBridge, user_id)
@@ -225,8 +255,11 @@ def get_qr(user_id: int, timeout_seconds: float = 30.0) -> Optional[str]:
     return None
 
 
-def request_pairing_code(user_id: int, phone: str, timeout_seconds: float = 30.0) -> dict:
-    """Ask the bridge for an 8-character pairing code for the given phone.
+def request_pairing_code(user_id: int, phone: str, timeout_seconds: float = 45.0) -> dict:
+    """Pair user `user_id` to WhatsApp number `phone` using the 8-char code flow.
+
+    Cold-restarts the bridge with BRIDGE_PAIR_PHONE so Baileys requests the
+    code before attempting QR; polls /pair until the code appears.
 
     Returns one of:
       {"ok": True, "code": "ABCD-1234"}
@@ -234,12 +267,10 @@ def request_pairing_code(user_id: int, phone: str, timeout_seconds: float = 30.0
       {"ok": False, "error": "<reason>"}
     """
     import requests
-    import db
-    with db.session_scope() as s:
-        row = s.get(db.WhatsAppBridge, user_id)
-        if row is None:
-            return {"ok": False, "error": "no bridge row — start bridge first"}
-        port = int(row.port)
+    try:
+        port = start_bridge(user_id, pair_phone=phone)
+    except Exception as e:
+        return {"ok": False, "error": f"bridge start failed: {e}"}
 
     url = f"http://127.0.0.1:{port}"
     deadline = time.monotonic() + timeout_seconds
@@ -253,11 +284,14 @@ def request_pairing_code(user_id: int, phone: str, timeout_seconds: float = 30.0
             if r.status_code == 409:
                 return {"ok": False, "error": "already paired", "already_paired": True}
             if r.status_code == 503:
-                # socket not ready yet — keep polling
-                last_err = "socket warming up"
+                last_err = "Baileys warming up"
                 time.sleep(1)
                 continue
-            last_err = (r.json().get("error") if r.headers.get("content-type", "").startswith("application/json") else r.text) or f"HTTP {r.status_code}"
+            last_err = (
+                r.json().get("error")
+                if r.headers.get("content-type", "").startswith("application/json")
+                else r.text
+            ) or f"HTTP {r.status_code}"
         except Exception as e:
             last_err = str(e)
             time.sleep(1)

@@ -30,10 +30,12 @@ const qrcode = require('qrcode-terminal');
 const PORT = parseInt(process.env.BRIDGE_PORT || '3030', 10);
 const AUTH_DIR = process.env.WA_AUTH_DIR || './auth_session';
 const LOG_LEVEL = process.env.LOG_LEVEL || 'silent';
+const PAIR_PHONE = process.env.BRIDGE_PAIR_PHONE || '';   // digits only, e.g. "972501234567"
 const MAX_MSGS_PER_CHAT = 50;
 
 let sock = null;
 let currentQR = null;
+let pairingCode = null;
 let isReady = false;
 let lastConnError = null;
 let reconnectAttempt = 0;
@@ -105,6 +107,20 @@ async function startSocket() {
     markOnlineOnConnect: false,
   });
 
+  // Pairing-by-code: when the supervisor sets BRIDGE_PAIR_PHONE on spawn,
+  // request the 8-character code BEFORE Baileys settles into QR mode.
+  // Must happen right after socket creation, otherwise WhatsApp returns 401.
+  if (PAIR_PHONE && !state.creds.registered) {
+    try {
+      const code = await sock.requestPairingCode(PAIR_PHONE);
+      pairingCode = code.length === 8 ? `${code.slice(0, 4)}-${code.slice(4)}` : code;
+      console.log(`Pairing code for ${PAIR_PHONE}: ${pairingCode}`);
+    } catch (e) {
+      console.error('requestPairingCode failed', e?.message || e);
+      lastConnError = `pair_failed: ${e?.message || e}`;
+    }
+  }
+
   sock.ev.on('creds.update', saveCreds);
 
   sock.ev.on('connection.update', (update) => {
@@ -120,6 +136,7 @@ async function startSocket() {
     if (connection === 'open') {
       isReady = true;
       currentQR = null;
+      pairingCode = null;
       lastConnError = null;
       reconnectAttempt = 0;
       console.log('WhatsApp connected — bridge ready.');
@@ -215,33 +232,24 @@ app.get('/qr', (_req, res) => {
 });
 
 /**
- * Pairing-by-code alternative to QR. The user enters a phone number; Baileys
- * returns an 8-character code the user types into WhatsApp →
- * Linked Devices → Link with phone number.
+ * Pairing-by-code: returns the pre-generated code (Baileys produced it during
+ * socket startup when BRIDGE_PAIR_PHONE was set as env). If the bridge was
+ * started without that env, we cannot retro-request a code without
+ * disturbing the current Baileys session — return 503 telling the
+ * supervisor to restart the bridge with the phone set.
  *
- * Must be called before the WS connects to the registered account, i.e. on
- * a fresh auth_session. If the session is already registered, returns 409.
+ * If the session is already authenticated, returns 409.
  */
-app.post('/pair', async (req, res) => {
+app.post('/pair', (_req, res) => {
   if (isReady) {
     return res.status(409).json({ error: 'already_paired' });
   }
-  if (!sock || !sock.requestPairingCode) {
-    return res.status(503).json({ error: 'socket_not_ready' });
+  if (pairingCode) {
+    return res.json({ code: pairingCode });
   }
-  const { phone } = req.body || {};
-  if (!phone) return res.status(400).json({ error: 'phone required' });
-  // Baileys wants digits only, no '+' / spaces / dashes
-  const digits = String(phone).replace(/\D/g, '');
-  if (digits.length < 8) return res.status(400).json({ error: 'invalid phone' });
-  try {
-    const code = await sock.requestPairingCode(digits);
-    // Pretty-format: ABCD-1234
-    const pretty = code.length === 8 ? `${code.slice(0, 4)}-${code.slice(4)}` : code;
-    res.json({ code: pretty, raw: code });
-  } catch (e) {
-    res.status(500).json({ error: e.message || String(e) });
-  }
+  // No code generated yet — either Baileys is still warming up, or this
+  // bridge wasn't spawned with BRIDGE_PAIR_PHONE.
+  res.status(503).json({ error: PAIR_PHONE ? 'code_pending' : 'pair_mode_not_initialized' });
 });
 
 app.get('/groups', async (_req, res) => {
