@@ -265,6 +265,18 @@ async def _conversation_cancel(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 async def handle_natural(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # Settings-menu credential capture runs first — it works for any
+    # access-bearing user, not just the legacy owner. If the user is in the
+    # middle of a /settings flow (e.g. typing a phone number for WhatsApp
+    # pairing or Pushover keys), this consumes the message and returns.
+    try:
+        import settings_menu
+        consumed = await settings_menu.capture_credential_message(update, context)
+        if consumed:
+            return
+    except Exception as e:
+        logger.warning("settings_menu capture failed: %s", e)
+
     if not _is_owner(update):
         return
     await _process_natural(update.message.text, update, context)

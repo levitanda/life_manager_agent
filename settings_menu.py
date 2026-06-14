@@ -156,9 +156,10 @@ def _integration_actions_keyboard(integration: str, enabled: bool) -> InlineKeyb
     elif integration == "whatsapp":
         if enabled:
             rows.append([InlineKeyboardButton("🛑 Отключить", callback_data="settings:whatsapp:off")])
-            rows.append([InlineKeyboardButton("🔄 Переподключить (новый QR)", callback_data="settings:whatsapp:restart")])
+            rows.append([InlineKeyboardButton("🔄 Переподключить", callback_data="settings:whatsapp:restart")])
         else:
-            rows.append([InlineKeyboardButton("📲 Подключить (QR)", callback_data="settings:whatsapp:on")])
+            rows.append([InlineKeyboardButton("📲 Подключить по коду", callback_data="settings:whatsapp:pair")])
+            rows.append([InlineKeyboardButton("🟫 Альтернатива: QR", callback_data="settings:whatsapp:on")])
     elif integration == "diary_doc":
         if enabled:
             rows.append([InlineKeyboardButton("🛑 Отключить", callback_data="settings:diary_doc:off")])
@@ -242,7 +243,7 @@ async def cb_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await _handle_google(query, user_id, parts)
         return
     if action == "whatsapp":
-        await _handle_whatsapp(query, user_id, parts)
+        await _handle_whatsapp(query, user_id, parts, context=context)
         return
     if action == "alice":
         await _handle_alice(query, user_id, parts)
@@ -286,7 +287,7 @@ async def _handle_google(query, user_id: int, parts: list[str]) -> None:
     )
 
 
-async def _handle_whatsapp(query, user_id: int, parts: list[str]) -> None:
+async def _handle_whatsapp(query, user_id: int, parts: list[str], context=None) -> None:
     """Spawn or stop a per-user Baileys bridge.
 
     "Connected" is reported only after the WhatsApp app has paired and the
@@ -300,6 +301,26 @@ async def _handle_whatsapp(query, user_id: int, parts: list[str]) -> None:
         whatsapp_supervisor.stop_bridge(user_id)
         _disable(user_id, "whatsapp")
         await query.edit_message_text("🛑 WhatsApp отключён.")
+        return
+
+    if action == "pair":
+        # Pairing-by-phone-code: spawn bridge, then ask user for phone number.
+        try:
+            whatsapp_supervisor.start_bridge(user_id)
+            _upsert_config(user_id, "whatsapp", {"managed": True}, enabled=False)
+        except Exception as e:
+            logger.exception("WhatsApp bridge start failed: %s", e)
+            await query.edit_message_text(f"⚠️ Не удалось запустить bridge: {e}")
+            return
+        if context is not None and context.user_data is not None:
+            context.user_data["pending_integration"] = "whatsapp_pair"
+        await query.edit_message_text(
+            "📲 *Подключение WhatsApp по коду*\n\n"
+            "Пришли свой номер WhatsApp одним сообщением в формате `+972501234567` "
+            "(с плюсом и кодом страны, без пробелов).\n\n"
+            "Я попрошу WhatsApp выдать 8-значный код, ты введёшь его в приложении.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
         return
 
     if action in ("on", "restart"):
@@ -411,6 +432,46 @@ async def capture_credential_message(update: Update, context: ContextTypes.DEFAU
         return False
     text = (update.effective_message.text or "").strip()
     parts = text.split()
+    # Special pseudo-integration: WhatsApp pairing — capture phone, request code
+    if pending == "whatsapp_pair":
+        phone_digits = "".join(c for c in text if c.isdigit())
+        if len(phone_digits) < 8:
+            await update.effective_message.reply_text(
+                "Не похоже на номер. Пришли в формате `+972501234567`.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return True
+        await update.effective_message.reply_text("⏳ Запрашиваю код у WhatsApp…")
+        import whatsapp_supervisor
+        result = whatsapp_supervisor.request_pairing_code(user.id, phone_digits, timeout_seconds=45)
+        context.user_data.pop("pending_integration", None)
+        if not result.get("ok"):
+            err = result.get("error") or "unknown error"
+            if result.get("already_paired"):
+                await update.effective_message.reply_text(
+                    "✅ Эта сессия уже привязана к WhatsApp. Открой `/settings → WhatsApp` — статус должен быть зелёным."
+                )
+            else:
+                await update.effective_message.reply_text(f"⚠️ Не удалось получить код: {err}\nПопробуй заново через `/settings → WhatsApp`.")
+            return True
+        code = result["code"]
+        await update.effective_message.reply_text(
+            "📲 *Подключение WhatsApp — инструкция*\n\n"
+            f"Твой код: `{code}`\n\n"
+            "_(нажми на код чтобы скопировать — тапни и подержи)_\n\n"
+            "*Что делать:*\n"
+            "1. Открой *WhatsApp* на телефоне (на котором этот номер)\n"
+            "2. ⚙️ *Настройки* → *Связанные устройства*\n"
+            "3. Нажми *«Привязать устройство»*\n"
+            "4. На экране сканера QR — нажми *«Привязать по номеру телефона»* (или *Link with phone number*)\n"
+            "5. Введи код: `{c}`\n\n"
+            "Когда увидишь «✅ Устройство привязано» — вернись сюда и открой `/settings → WhatsApp`. "
+            "Статус сменится на 🟢 Подключено.\n\n"
+            "_Код действителен 60 секунд. Если не успел — открой меню снова._".format(c=code),
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return True
+
     parsers = {
         "pushover": (2, lambda p: {"user_key": p[0], "app_token": p[1]}),
         "tuya": (4, lambda p: {"api_key": p[0], "api_secret": p[1], "region": p[2], "user_id": p[3]}),

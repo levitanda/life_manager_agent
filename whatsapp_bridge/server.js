@@ -214,6 +214,36 @@ app.get('/qr', (_req, res) => {
   res.json({ qr: currentQR });
 });
 
+/**
+ * Pairing-by-code alternative to QR. The user enters a phone number; Baileys
+ * returns an 8-character code the user types into WhatsApp →
+ * Linked Devices → Link with phone number.
+ *
+ * Must be called before the WS connects to the registered account, i.e. on
+ * a fresh auth_session. If the session is already registered, returns 409.
+ */
+app.post('/pair', async (req, res) => {
+  if (isReady) {
+    return res.status(409).json({ error: 'already_paired' });
+  }
+  if (!sock || !sock.requestPairingCode) {
+    return res.status(503).json({ error: 'socket_not_ready' });
+  }
+  const { phone } = req.body || {};
+  if (!phone) return res.status(400).json({ error: 'phone required' });
+  // Baileys wants digits only, no '+' / spaces / dashes
+  const digits = String(phone).replace(/\D/g, '');
+  if (digits.length < 8) return res.status(400).json({ error: 'invalid phone' });
+  try {
+    const code = await sock.requestPairingCode(digits);
+    // Pretty-format: ABCD-1234
+    const pretty = code.length === 8 ? `${code.slice(0, 4)}-${code.slice(4)}` : code;
+    res.json({ code: pretty, raw: code });
+  } catch (e) {
+    res.status(500).json({ error: e.message || String(e) });
+  }
+});
+
 app.get('/groups', async (_req, res) => {
   if (!isReady) return res.status(503).json({ error: 'not_ready' });
   try {

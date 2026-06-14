@@ -209,6 +209,47 @@ def get_qr(user_id: int, timeout_seconds: float = 30.0) -> Optional[str]:
     return None
 
 
+def request_pairing_code(user_id: int, phone: str, timeout_seconds: float = 30.0) -> dict:
+    """Ask the bridge for an 8-character pairing code for the given phone.
+
+    Returns one of:
+      {"ok": True, "code": "ABCD-1234"}
+      {"ok": False, "error": "<reason>", "already_paired": True}
+      {"ok": False, "error": "<reason>"}
+    """
+    import requests
+    import db
+    with db.session_scope() as s:
+        row = s.get(db.WhatsAppBridge, user_id)
+        if row is None:
+            return {"ok": False, "error": "no bridge row — start bridge first"}
+        port = int(row.port)
+
+    url = f"http://127.0.0.1:{port}"
+    deadline = time.monotonic() + timeout_seconds
+    last_err: Optional[str] = None
+    while time.monotonic() < deadline:
+        try:
+            r = requests.post(f"{url}/pair", json={"phone": phone}, timeout=5)
+            if r.status_code == 200:
+                data = r.json()
+                return {"ok": True, "code": data.get("code") or data.get("raw")}
+            if r.status_code == 409:
+                return {"ok": False, "error": "already paired", "already_paired": True}
+            if r.status_code == 503:
+                # socket not ready yet — keep polling
+                last_err = "socket warming up"
+                time.sleep(1)
+                continue
+            last_err = (r.json().get("error") if r.headers.get("content-type", "").startswith("application/json") else r.text) or f"HTTP {r.status_code}"
+        except Exception as e:
+            last_err = str(e)
+            time.sleep(1)
+            continue
+        time.sleep(1)
+    return {"ok": False, "error": last_err or "timeout"}
+
+
 def restore_running_bridges() -> int:
     """On bot startup: spawn a Node process for every user marked status='running' or 'qr_pending'."""
     import db
