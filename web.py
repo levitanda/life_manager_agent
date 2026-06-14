@@ -143,26 +143,35 @@ def create_app() -> FastAPI:
     async def stripe_webhook(request: Request) -> JSONResponse:
         """Handle subscription lifecycle events from Stripe.
 
-        Implementation note: signature verification (stripe.Webhook.construct_event)
-        is wired in Phase 5 once stripe_client.py is in. For now this endpoint
-        accepts JSON and updates subscription_status if the event clearly maps
-        to a known case — fail-safe default is to log and return 200 to avoid
-        Stripe retry storms during early rollout.
+        When STRIPE_WEBHOOK_SECRET is set, the Stripe-Signature header is
+        verified via stripe.Webhook.construct_event. If verification fails,
+        return 400. Without a secret, fall back to plain JSON parse (dev mode).
         """
-        try:
-            body = await request.body()
-            event = json.loads(body)
-        except Exception:
-            raise HTTPException(status_code=400, detail="Invalid JSON")
+        body = await request.body()
+        sig = request.headers.get("stripe-signature")
+        secret = os.environ.get("STRIPE_WEBHOOK_SECRET")
+
+        if secret and sig:
+            try:
+                import stripe_client
+                event = stripe_client.construct_event(body, sig)
+            except Exception as e:
+                logger.warning("Stripe signature verification failed: %s", e)
+                raise HTTPException(status_code=400, detail="bad signature")
+        else:
+            try:
+                event = json.loads(body)
+            except Exception:
+                raise HTTPException(status_code=400, detail="Invalid JSON")
+            if secret and not sig:
+                logger.warning("Stripe webhook hit without Stripe-Signature header")
 
         try:
-            from stripe_client import apply_event_to_db
-            apply_event_to_db(event)
-        except ImportError:
-            logger.info("Stripe event received (handler not yet wired): %s", event.get("type"))
+            import stripe_client
+            stripe_client.apply_event_to_db(event)
         except Exception as e:
-            logger.exception("Stripe webhook failed: %s", e)
-            # Still 200: Stripe will retry on 5xx — for unknown events we'd rather log and move on.
+            logger.exception("Stripe webhook handler failed: %s", e)
+            # Return 200 anyway — Stripe retries on 5xx, we'd rather log and move on.
         return JSONResponse({"received": True})
 
     @app.post("/alice/{user_id}/{secret}")

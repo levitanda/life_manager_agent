@@ -151,6 +151,33 @@ def test_stripe_webhook_invalid_json_400(client):
     assert r.status_code == 400
 
 
+def test_stripe_webhook_verifies_signature_when_secret_set(client, monkeypatch):
+    """When STRIPE_WEBHOOK_SECRET is set and a Stripe-Signature header is sent,
+    construct_event is called and bad signatures yield 400."""
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_test")
+    with patch("stripe_client.construct_event", side_effect=ValueError("bad sig")):
+        r = client.post(
+            "/stripe/webhook",
+            content=b'{"type":"x"}',
+            headers={"stripe-signature": "t=1,v1=abc"},
+        )
+    assert r.status_code == 400
+
+
+def test_stripe_webhook_signature_ok_routes_to_handler(client, monkeypatch):
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_test")
+    event = {"type": "checkout.session.completed", "data": {"object": {"client_reference_id": "1"}}}
+    with patch("stripe_client.construct_event", return_value=event), \
+         patch("stripe_client.apply_event_to_db") as apply:
+        r = client.post(
+            "/stripe/webhook",
+            content=b'{"type":"x"}',
+            headers={"stripe-signature": "t=1,v1=abc"},
+        )
+    assert r.status_code == 200
+    apply.assert_called_once_with(event)
+
+
 # ─── Alice webhook ────────────────────────────────────────────────────────────
 
 
