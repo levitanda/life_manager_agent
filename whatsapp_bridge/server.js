@@ -107,24 +107,30 @@ async function startSocket() {
     markOnlineOnConnect: false,
   });
 
-  // Pairing-by-code: when the supervisor sets BRIDGE_PAIR_PHONE on spawn,
-  // request the 8-character code BEFORE Baileys settles into QR mode.
-  // Must happen right after socket creation, otherwise WhatsApp returns 401.
-  if (PAIR_PHONE && !state.creds.registered) {
-    try {
-      const code = await sock.requestPairingCode(PAIR_PHONE);
-      pairingCode = code.length === 8 ? `${code.slice(0, 4)}-${code.slice(4)}` : code;
-      console.log(`Pairing code for ${PAIR_PHONE}: ${pairingCode}`);
-    } catch (e) {
-      console.error('requestPairingCode failed', e?.message || e);
-      lastConnError = `pair_failed: ${e?.message || e}`;
-    }
-  }
-
   sock.ev.on('creds.update', saveCreds);
 
-  sock.ev.on('connection.update', (update) => {
+  let pairRequested = false;
+  sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
+
+    // Pairing-by-code: when BRIDGE_PAIR_PHONE is set, intercept the FIRST
+    // moment the noise handshake reaches QR-challenge (qr event) and switch
+    // to mobile pairing-code mode instead. Calling requestPairingCode any
+    // earlier (right after makeWASocket) raises 'Connection Closed' because
+    // the WebSocket noise handshake hasn't completed yet.
+    if (qr && PAIR_PHONE && !pairRequested && !state.creds.registered) {
+      pairRequested = true;
+      currentQR = null; // discard QR — we're using code-mode
+      try {
+        const code = await sock.requestPairingCode(PAIR_PHONE);
+        pairingCode = code.length === 8 ? `${code.slice(0, 4)}-${code.slice(4)}` : code;
+        console.log(`Pairing code for ${PAIR_PHONE}: ${pairingCode}`);
+      } catch (e) {
+        console.error('requestPairingCode failed', e?.message || e);
+        lastConnError = `pair_failed: ${e?.message || e}`;
+      }
+      return;
+    }
 
     if (qr) {
       currentQR = qr;
