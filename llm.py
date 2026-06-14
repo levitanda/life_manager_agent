@@ -238,11 +238,14 @@ def _anthropic_fallback(
     import anthropic
     import config
 
-    # Map Bedrock id → Anthropic id (best-effort)
+    # Map Bedrock id → Anthropic id (best-effort). Accepts both raw and
+    # eu.-prefixed inference profile ids.
     mapping = {
+        "eu.anthropic.claude-haiku-4-5-20251001-v1:0": "claude-haiku-4-5-20251001",
         "anthropic.claude-haiku-4-5-20251001-v1:0": "claude-haiku-4-5-20251001",
+        "eu.anthropic.claude-sonnet-4-6": "claude-sonnet-4-6",
         "anthropic.claude-sonnet-4-6-v1:0": "claude-sonnet-4-6",
-        # For non-Anthropic models in fallback mode, default to Sonnet
+        # For Nova / Llama in fallback mode, default to Sonnet
     }
     aid = mapping.get(model, "claude-sonnet-4-6")
 
@@ -278,9 +281,18 @@ def _anthropic_fallback(
 
 
 # ─── Model registry ───────────────────────────────────────────────────────────
+#
+# Bedrock in eu-central-1 requires inference profiles for chat models — the
+# bare model id (e.g. "amazon.nova-lite-v1:0") returns ValidationException with
+# "on-demand throughput isn't supported". The `eu.` prefix is the EU inference
+# profile that auto-routes within EU regions.
 
-MODEL_LLAMA_70B = "meta.llama3-3-70b-instruct-v1:0"
-MODEL_NOVA_LITE = "amazon.nova-lite-v1:0"
-MODEL_NOVA_PRO = "amazon.nova-pro-v1:0"
-MODEL_HAIKU_BEDROCK = "anthropic.claude-haiku-4-5-20251001-v1:0"
-MODEL_SONNET_BEDROCK = "anthropic.claude-sonnet-4-6-v1:0"
+MODEL_NOVA_LITE = "eu.amazon.nova-lite-v1:0"
+MODEL_NOVA_PRO = "eu.amazon.nova-pro-v1:0"
+MODEL_HAIKU_BEDROCK = "eu.anthropic.claude-haiku-4-5-20251001-v1:0"
+MODEL_SONNET_BEDROCK = "eu.anthropic.claude-sonnet-4-6"
+
+# Llama 3.3 70B is not available as an EU inference profile yet (only Llama
+# 3.2 1B/3B). Nova Pro is the closest cost/quality match within EU.
+# Keep the name for callers that already reference llm.MODEL_LLAMA_70B.
+MODEL_LLAMA_70B = MODEL_NOVA_PRO
