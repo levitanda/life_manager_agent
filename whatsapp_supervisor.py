@@ -267,7 +267,13 @@ def request_pairing_code(user_id: int, phone: str, timeout_seconds: float = 30.0
 
 
 def restore_running_bridges() -> int:
-    """On bot startup: spawn a Node process for every user marked status='running' or 'qr_pending'."""
+    """On bot startup: spawn a Node process for every user marked status='running' or 'qr_pending'.
+
+    Rows with status='external' represent bridges that were started outside
+    this supervisor (e.g. the long-running single-user bridge Daria stood
+    up before the multi-tenant migration). We do NOT spawn anything for
+    those — we just trust the existing process.
+    """
     import db
     started = 0
     with db.session_scope() as s:

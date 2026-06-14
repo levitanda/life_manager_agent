@@ -40,7 +40,14 @@ LEGACY_GROUPS_FILE = Path(__file__).parent / "whatsapp_groups.json"
 # ─── Per-user URL + registry path resolution ─────────────────────────────────
 
 
-def _bridge_url(user_id: Optional[int]) -> str:
+def _bridge_url(user_id: Optional[int]) -> Optional[str]:
+    """Resolve the bridge URL for a user.
+
+    - user_id=None  → legacy single-user URL from env (backward compat).
+    - user_id given → port from whatsapp_bridges row, or None if no row
+      (NEVER falls back to the legacy URL — that would leak another user's
+      WhatsApp session).
+    """
     if user_id is None:
         return LEGACY_BRIDGE_URL
     try:
@@ -51,7 +58,11 @@ def _bridge_url(user_id: Optional[int]) -> str:
                 return f"http://127.0.0.1:{int(row.port)}"
     except Exception as e:
         logger.warning("WhatsApp bridge lookup failed for user %s: %s", user_id, e)
-    return LEGACY_BRIDGE_URL
+    return None  # no bridge configured for this user
+
+
+def _disconnected() -> dict:
+    return {"ready": False, "has_qr": False, "error": "not_connected", "chats_known": 0}
 
 
 def _groups_file(user_id: Optional[int]) -> Path:
@@ -102,8 +113,11 @@ def _load_registry(user_id: Optional[int] = None) -> dict:
 
 
 def status(user_id: Optional[int] = None) -> dict:
+    url = _bridge_url(user_id)
+    if url is None:
+        return _disconnected()
     try:
-        r = requests.get(f"{_bridge_url(user_id)}/status", timeout=3)
+        r = requests.get(f"{url}/status", timeout=3)
         return r.json()
     except Exception as e:
         return {"ready": False, "error": str(e)}
@@ -111,8 +125,11 @@ def status(user_id: Optional[int] = None) -> dict:
 
 def list_groups(user_id: Optional[int] = None) -> list[dict]:
     """Live fetch from the bridge — requires authenticated session."""
+    url = _bridge_url(user_id)
+    if url is None:
+        return []
     try:
-        r = requests.get(f"{_bridge_url(user_id)}/groups", timeout=15)
+        r = requests.get(f"{url}/groups", timeout=15)
         r.raise_for_status()
         return r.json().get("groups", [])
     except Exception as e:
@@ -122,8 +139,11 @@ def list_groups(user_id: Optional[int] = None) -> list[dict]:
 
 def unread_chats(user_id: Optional[int] = None) -> list[dict]:
     """Return chats with unread messages, each with up to 15 recent messages."""
+    url = _bridge_url(user_id)
+    if url is None:
+        return []
     try:
-        r = requests.get(f"{_bridge_url(user_id)}/unread", timeout=15)
+        r = requests.get(f"{url}/unread", timeout=15)
         r.raise_for_status()
         return r.json().get("chats", [])
     except Exception as e:
@@ -134,9 +154,12 @@ def unread_chats(user_id: Optional[int] = None) -> list[dict]:
 def get_chat_messages(
     chat_id: str, limit: int = 20, *, user_id: Optional[int] = None
 ) -> list[dict]:
+    url = _bridge_url(user_id)
+    if url is None:
+        return []
     try:
         r = requests.get(
-            f"{_bridge_url(user_id)}/chat/{chat_id}/messages",
+            f"{url}/chat/{chat_id}/messages",
             params={"limit": limit},
             timeout=10,
         )
@@ -149,9 +172,12 @@ def get_chat_messages(
 
 def find_chats(query: str, *, user_id: Optional[int] = None) -> list[dict]:
     """Fuzzy search by chat name (groups + 1-on-1 contacts the bridge knows)."""
+    url = _bridge_url(user_id)
+    if url is None:
+        return []
     try:
         r = requests.post(
-            f"{_bridge_url(user_id)}/find", json={"query": query}, timeout=10
+            f"{url}/find", json={"query": query}, timeout=10
         )
         r.raise_for_status()
         return r.json().get("matches", [])
@@ -179,9 +205,12 @@ def phone_to_jid(phone: str) -> str:
 def send_to_chat(
     chat_id: str, text: str, *, user_id: Optional[int] = None
 ) -> tuple[bool, str]:
+    url = _bridge_url(user_id)
+    if url is None:
+        return False, "WhatsApp не подключён"
     try:
         r = requests.post(
-            f"{_bridge_url(user_id)}/send",
+            f"{url}/send",
             json={"chatId": chat_id, "text": text},
             timeout=45,
         )
