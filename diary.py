@@ -316,12 +316,53 @@ def doc_url() -> Optional[str]:
     return f"https://docs.google.com/document/d/{doc_id}/edit" if doc_id else None
 
 
+def _sort_local_by_date_desc() -> None:
+    """Re-sort the local diary so day sections appear newest first."""
+    content = _read_local()
+    if not content.strip():
+        return
+    matches = list(_DAY_HEADER_RE.finditer(content))
+    if not matches:
+        return
+    sections: list[tuple[datetime.date, str]] = []
+    for i, m in enumerate(matches):
+        start = m.start()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(content)
+        try:
+            d = datetime.date.fromisoformat(m.group(1))
+        except ValueError:
+            continue
+        sections.append((d, content[start:end].rstrip()))
+    sections.sort(key=lambda s: s[0], reverse=True)
+    _write_local("\n\n".join(s[1] for s in sections) + "\n")
+
+
+def _resync_doc_from_local() -> None:
+    """Replace the entire Google Doc content with the current local file."""
+    content = _read_local()
+    doc_id = _get_or_create_doc_id()
+    docs = _docs_service()
+    doc = docs.documents().get(documentId=doc_id).execute()
+    body_content = doc.get("body", {}).get("content", [])
+    requests = []
+    if body_content:
+        end_index = body_content[-1].get("endIndex", 1)
+        if end_index > 2:
+            requests.append({"deleteContentRange": {"range": {"startIndex": 1, "endIndex": end_index - 1}}})
+    if content:
+        requests.append({"insertText": {"location": {"index": 1}, "text": content}})
+    if requests:
+        docs.documents().batchUpdate(documentId=doc_id, body={"requests": requests}).execute()
+
+
 def backfill_from_summaries(summaries_file: str = "session_summaries.jsonl") -> dict:
     """One-time backfill: pull past session summaries into diary sections.
 
     For each calendar day that has at least one session summary AND is not
-    already present in the diary, prepends a new day section containing all
-    that day's summaries as `[HH:MM] Из памяти: …` paragraphs.
+    already present in the diary, adds a new day section containing all
+    that day's summaries as `[HH:MM] Из памяти: …` paragraphs. After all
+    insertions, the local file is sorted newest-first and the Google Doc
+    is rewritten in one batch to match.
 
     Safe to re-run: days already in the diary are skipped, not overwritten.
     """
@@ -354,7 +395,6 @@ def backfill_from_summaries(summaries_file: str = "session_summaries.jsonl") -> 
 
     added: list[str] = []
     skipped: list[str] = []
-    # Oldest first so after sequential prepends the newest day ends up on top.
     for date_str in sorted(by_date.keys()):
         if date_str in existing_dates:
             skipped.append(date_str)
@@ -369,14 +409,19 @@ def backfill_from_summaries(summaries_file: str = "session_summaries.jsonl") -> 
             paragraphs.append(f"[{time_str}] Из памяти: {cleaned}")
         header = _format_day_header(d)
         body = "\n\n".join(paragraphs)
-        _prepend_to_local(header, body)
-        try:
-            doc_id = _get_or_create_doc_id()
-            _prepend_to_doc(doc_id, f"{header}\n{body}\n\n")
-        except Exception as e:
-            logger.warning("Diary backfill: Google Doc sync failed for %s: %s", date_str, e)
+        # Append to local file unsorted — we'll sort at the end.
+        with open(config.DIARY_FILE, "a", encoding="utf-8") as f:
+            f.write(("\n\n" if existing else "") + header + "\n" + body + "\n")
+        existing = "exists"  # any truthy
         added.append(date_str)
         existing_dates.add(date_str)
+
+    if added:
+        _sort_local_by_date_desc()
+        try:
+            _resync_doc_from_local()
+        except Exception as e:
+            logger.warning("Diary backfill: Google Doc resync failed: %s", e)
 
     return {
         "ok": True,
@@ -385,3 +430,17 @@ def backfill_from_summaries(summaries_file: str = "session_summaries.jsonl") -> 
         "added_dates": added,
         "skipped_dates": skipped,
     }
+
+
+def resync_doc() -> dict:
+    """Force sort the local diary and rewrite the Google Doc to match.
+
+    Useful for repairing the Doc after manual edits or after a botched
+    backfill from an older version of this code.
+    """
+    _sort_local_by_date_desc()
+    try:
+        _resync_doc_from_local()
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": True, "doc_url": doc_url()}
