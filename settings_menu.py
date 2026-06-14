@@ -116,13 +116,31 @@ def _menu_keyboard(user_id: int) -> InlineKeyboardMarkup:
     """Build the settings menu inline keyboard with current state markers."""
     rows = []
     for key, label in INTEGRATIONS:
-        on = _is_enabled(user_id, key) or (key == "google" and _has_google_token(user_id))
+        on = _integration_is_live(user_id, key)
         marker = "✅" if on else "⚪️"
         rows.append([
             InlineKeyboardButton(f"{marker} {label}", callback_data=f"settings:open:{key}"),
         ])
     rows.append([InlineKeyboardButton("⬅️ Закрыть", callback_data="settings:close")])
     return InlineKeyboardMarkup(rows)
+
+
+def _integration_is_live(user_id: int, integration: str) -> bool:
+    """Truth source for the ✅/⚪ marker.
+
+    - google: a stored OAuth token is enough proof
+    - whatsapp: bridge process must be paired (status check), NOT just enabled flag
+    - everything else: the user_integrations.enabled flag
+    """
+    if integration == "google":
+        return _has_google_token(user_id)
+    if integration == "whatsapp":
+        try:
+            import whatsapp_client
+            return bool(whatsapp_client.status(user_id=user_id).get("ready"))
+        except Exception:
+            return False
+    return _is_enabled(user_id, integration)
 
 
 def _has_google_token(user_id: int) -> bool:
@@ -239,9 +257,7 @@ async def cb_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 async def _render_integration(query, user_id: int, integration: str) -> None:
     label = dict(INTEGRATIONS).get(integration, integration)
-    enabled = _is_enabled(user_id, integration) or (
-        integration == "google" and _has_google_token(user_id)
-    )
+    enabled = _integration_is_live(user_id, integration)
     descs = {
         "google": "Календарь, Gmail, Контакты, Drive, Docs. Обязательно для работы бота.",
         "whatsapp": "Подключение твоего номера через QR. Бот будет читать непрочитанные и слать сообщения от твоего имени.",
@@ -271,7 +287,12 @@ async def _handle_google(query, user_id: int, parts: list[str]) -> None:
 
 
 async def _handle_whatsapp(query, user_id: int, parts: list[str]) -> None:
-    """Spawn or stop a per-user Baileys bridge."""
+    """Spawn or stop a per-user Baileys bridge.
+
+    "Connected" is reported only after the WhatsApp app has paired and the
+    bridge reports status='running'. Until then we keep enabled=0 so the
+    settings menu doesn't lie.
+    """
     action = parts[2] if len(parts) > 2 else "on"
     import whatsapp_supervisor
 
@@ -284,21 +305,44 @@ async def _handle_whatsapp(query, user_id: int, parts: list[str]) -> None:
     if action in ("on", "restart"):
         if action == "restart":
             whatsapp_supervisor.stop_bridge(user_id)
+            _disable(user_id, "whatsapp")
         try:
             whatsapp_supervisor.start_bridge(user_id)
-            _upsert_config(user_id, "whatsapp", {"managed": True}, enabled=True)
+            # Persist a row so the user can come back and check QR, but DO NOT
+            # set enabled=1 yet — that flips only after successful pairing.
+            _upsert_config(user_id, "whatsapp", {"managed": True}, enabled=False)
         except Exception as e:
             logger.exception("WhatsApp bridge start failed: %s", e)
             await query.edit_message_text(f"⚠️ Не удалось запустить bridge: {e}")
             return
-        qr = whatsapp_supervisor.get_qr(user_id, timeout_seconds=10)
+
+        # Baileys typically emits the QR within 5-20s on cold start; give 45s.
+        qr = whatsapp_supervisor.get_qr(user_id, timeout_seconds=45)
         if qr is None:
-            await query.edit_message_text("📲 Bridge запущен. QR пока не готов — попробуй через минуту: /settings → WhatsApp.")
+            await query.edit_message_text(
+                "⏳ Bridge запускается, но QR-код пока не получен.\n\n"
+                "Подожди 30 секунд и нажми снова `/settings → WhatsApp → Подключить`. "
+                "Статус останется *Не подключено* пока ты не отсканируешь QR.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
             return
         await query.edit_message_text(
-            f"📲 Отсканируй этот QR в WhatsApp → Связанные устройства:\n\n`{qr}`\n\nПосле успешной привязки нажми /settings → WhatsApp.",
+            f"📲 Отсканируй этот QR в WhatsApp → Связанные устройства:\n\n"
+            f"`{qr}`\n\n"
+            f"После успешной привязки вернись в `/settings → WhatsApp` — "
+            f"статус сменится на ✅ Подключено.",
             parse_mode=ParseMode.MARKDOWN,
         )
+
+
+def _whatsapp_is_paired(user_id: int) -> bool:
+    """True if the bridge for this user is up AND already paired with WhatsApp."""
+    try:
+        import whatsapp_client
+        s = whatsapp_client.status(user_id=user_id)
+        return bool(s.get("ready"))
+    except Exception:
+        return False
 
 
 async def _handle_alice(query, user_id: int, parts: list[str]) -> None:
