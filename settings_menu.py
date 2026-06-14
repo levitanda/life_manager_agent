@@ -78,6 +78,8 @@ def _upsert_config(user_id: int, integration: str, config: dict, enabled: bool =
         else:
             row.enabled = 1 if enabled else 0
             row.config_json_encrypted = enc
+    # any cached live-status for this integration is now stale
+    _invalidate_status(user_id, integration)
 
 
 def _disable(user_id: int, integration: str) -> None:
@@ -90,6 +92,7 @@ def _disable(user_id: int, integration: str) -> None:
         )
         if row:
             row.enabled = 0
+    _invalidate_status(user_id, integration)
 
 
 def _get_config(user_id: int, integration: str) -> Optional[dict]:
@@ -125,22 +128,110 @@ def _menu_keyboard(user_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
-def _integration_is_live(user_id: int, integration: str) -> bool:
-    """Truth source for the ✅/⚪ marker.
+# Cache for live status checks: (user_id, integration) → (cached_at, value).
+# Some checks hit the network (Google refresh, Pushover validate), so we
+# memoize for a short TTL. Cache is invalidated whenever the user changes
+# the integration via /settings (see _upsert_config / _disable below).
+import time
+_status_cache: dict[tuple[int, str], tuple[float, bool]] = {}
+_STATUS_CACHE_TTL = 30.0  # seconds
 
-    - google: a stored OAuth token is enough proof
-    - whatsapp: bridge process must be paired (status check), NOT just enabled flag
-    - everything else: the user_integrations.enabled flag
-    """
-    if integration == "google":
-        return _has_google_token(user_id)
-    if integration == "whatsapp":
-        try:
+
+def _invalidate_status(user_id: int, integration: str) -> None:
+    _status_cache.pop((user_id, integration), None)
+
+
+def _integration_is_live(user_id: int, integration: str) -> bool:
+    """Truth source for the ✅/⚪ marker — verifies the integration is actually
+    usable, not just that a config row exists."""
+    key = (user_id, integration)
+    now = time.monotonic()
+    cached = _status_cache.get(key)
+    if cached and now - cached[0] < _STATUS_CACHE_TTL:
+        return cached[1]
+    value = _check_integration_live(user_id, integration)
+    _status_cache[key] = (now, value)
+    return value
+
+
+def _check_integration_live(user_id: int, integration: str) -> bool:
+    try:
+        if integration == "google":
+            return _google_is_live(user_id)
+        if integration == "whatsapp":
             import whatsapp_client
             return bool(whatsapp_client.status(user_id=user_id).get("ready"))
-        except Exception:
-            return False
-    return _is_enabled(user_id, integration)
+        if integration == "pushover":
+            return _pushover_is_live(user_id)
+        if integration == "alice":
+            return _alice_is_live(user_id)
+        if integration == "tuya":
+            return _tuya_is_live(user_id)
+        if integration == "vesync":
+            return _vesync_is_live(user_id)
+        if integration == "diary_doc":
+            return _is_enabled(user_id, "diary_doc") and _has_google_token(user_id)
+    except Exception as e:
+        logger.warning("live status check failed for %s/%s: %s", user_id, integration, e)
+    return False
+
+
+# ─── Per-integration liveness checks ──────────────────────────────────────────
+
+
+def _google_is_live(user_id: int) -> bool:
+    """True iff get_credentials succeeds — verifies the token still refreshes."""
+    if not _has_google_token(user_id):
+        return False
+    try:
+        import google_auth
+        creds = google_auth.get_credentials(user_id)
+        return bool(creds.valid)
+    except Exception as e:
+        logger.info("google live check failed for user %s: %s", user_id, e)
+        return False
+
+
+def _pushover_is_live(user_id: int) -> bool:
+    """Hit Pushover's validate endpoint to confirm credentials are accepted."""
+    if not _is_enabled(user_id, "pushover"):
+        return False
+    cfg = _get_config(user_id, "pushover") or {}
+    if not (cfg.get("user_key") and cfg.get("app_token")):
+        return False
+    try:
+        import requests
+        r = requests.post(
+            "https://api.pushover.net/1/users/validate.json",
+            data={"token": cfg["app_token"], "user": cfg["user_key"]},
+            timeout=5,
+        )
+        return r.status_code == 200 and r.json().get("status") == 1
+    except Exception:
+        return False
+
+
+def _alice_is_live(user_id: int) -> bool:
+    """Alice has no live ping — the webhook is "live" iff a secret is stored."""
+    cfg = _get_config(user_id, "alice") or {}
+    return _is_enabled(user_id, "alice") and bool(cfg.get("secret"))
+
+
+def _tuya_is_live(user_id: int) -> bool:
+    """All required fields present; deeper API ping is too slow for menu render."""
+    if not _is_enabled(user_id, "tuya"):
+        return False
+    cfg = _get_config(user_id, "tuya") or {}
+    required = {"api_key", "api_secret", "region", "user_id"}
+    return required.issubset(cfg.keys()) and all(cfg.get(k) for k in required)
+
+
+def _vesync_is_live(user_id: int) -> bool:
+    if not _is_enabled(user_id, "vesync"):
+        return False
+    cfg = _get_config(user_id, "vesync") or {}
+    required = {"email", "password", "country"}
+    return required.issubset(cfg.keys()) and all(cfg.get(k) for k in required)
 
 
 def _has_google_token(user_id: int) -> bool:
