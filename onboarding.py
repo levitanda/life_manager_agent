@@ -30,16 +30,23 @@ WELCOME_TEXT = (
     "👋 *Привет! Я личный AI-ассистент.*\n\n"
     "Помогаю с календарём, почтой, WhatsApp, дайджестами, дневником, "
     "умным домом. Работаю каждый день на твоём собственном расписании.\n\n"
-    "💳 Стоимость: *$20/мес* (Stripe).\n"
+    "🚧 Сейчас я в закрытой бете. Скоро буду доступен каждому — "
+    "следи за обновлениями.\n\n"
     "🎁 Если есть промокод — введи `/promo КОД`."
+)
+
+COMING_SOON_TEXT = (
+    "🚧 Платежи пока не подключены.\n\n"
+    "Скоро бот будет доступен по подписке всем — следи за обновлениями. "
+    "Если у тебя есть промокод, попробуй `/promo КОД`."
 )
 
 
 def _start_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("💳 Подписаться $20/мес", callback_data="onboard:subscribe")],
         [InlineKeyboardButton("🎁 У меня промокод", callback_data="onboard:promo")],
         [InlineKeyboardButton("ℹ️ Что я умею", callback_data="onboard:features")],
+        [InlineKeyboardButton("🚧 Подписка (скоро)", callback_data="onboard:subscribe")],
     ])
 
 
@@ -117,39 +124,10 @@ async def cmd_promo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Generate a Stripe Checkout link and send it to the user."""
-    import db
-    import stripe_client
-
-    tg_user = update.effective_user
-    with db.session_scope() as s:
-        user = db.get_user_by_telegram_id(s, tg_user.id)
-        if user is None:
-            user = db.create_user(
-                s,
-                telegram_user_id=tg_user.id,
-                telegram_chat_id=update.effective_chat.id,
-                display_name=(tg_user.first_name or tg_user.username or None),
-            )
-        user_id = user.id
-
-    try:
-        url = stripe_client.create_checkout_session(user_id)
-    except Exception as e:
-        logger.exception("Stripe checkout failed: %s", e)
-        await update.effective_message.reply_text(
-            "⚠️ Не получилось создать ссылку на оплату. Попробуй позже."
-        )
-        return
-
-    keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("💳 Оплатить $20/мес", url=url)
-    ]])
-    await update.effective_message.reply_text(
-        "Нажми кнопку чтобы оплатить через Stripe. Я узнаю как только "
-        "оплата пройдёт, и мы продолжим настройку.",
-        reply_markup=keyboard,
-    )
+    """Subscription is not enabled in Israel (Stripe doesn't work there yet).
+    Show a friendly 'coming soon' message and prompt for promo instead.
+    """
+    await update.effective_message.reply_text(COMING_SOON_TEXT, parse_mode=ParseMode.MARKDOWN)
 
 
 # ─── /cancel ─────────────────────────────────────────────────────────────────

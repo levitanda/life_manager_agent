@@ -139,30 +139,16 @@ async def test_promo_case_insensitive():
 
 
 @pytest.mark.asyncio
-async def test_subscribe_creates_checkout_link():
+async def test_subscribe_shows_coming_soon():
+    """Stripe doesn't work in Israel — /subscribe responds with a placeholder
+    until payments are wired up via a region-friendly provider."""
     import onboarding
     upd = _mk_update(42)
     ctx = _mk_context()
-    with patch("stripe_client.create_checkout_session", return_value="https://stripe/abc"):
-        await onboarding.cmd_subscribe(upd, ctx)
-    # Reply includes inline keyboard with stripe URL
-    kwargs = upd.effective_message.reply_text.call_args.kwargs
-    kb = kwargs.get("reply_markup")
-    assert kb is not None
-    # Inspect button via .inline_keyboard
-    button = kb.inline_keyboard[0][0]
-    assert button.url == "https://stripe/abc"
-
-
-@pytest.mark.asyncio
-async def test_subscribe_handles_stripe_failure():
-    import onboarding
-    upd = _mk_update(42)
-    ctx = _mk_context()
-    with patch("stripe_client.create_checkout_session", side_effect=RuntimeError("api down")):
-        await onboarding.cmd_subscribe(upd, ctx)
+    await onboarding.cmd_subscribe(upd, ctx)
     text = upd.effective_message.reply_text.call_args[0][0]
-    assert "не получилось" in text.lower()
+    assert "скоро" in text.lower() or "следи" in text.lower()
+    assert "/promo" in text.lower()
 
 
 # ─── /cancel ──────────────────────────────────────────────────────────────────

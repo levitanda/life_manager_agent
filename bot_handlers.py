@@ -832,6 +832,11 @@ def register_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("cancel", onboarding.cmd_cancel))
     app.add_handler(CallbackQueryHandler(onboarding.cb_onboard, pattern="^onboard:"))
 
+    # Settings (per-user integrations)
+    import settings_menu
+    app.add_handler(CommandHandler("settings", settings_menu.cmd_settings))
+    app.add_handler(CallbackQueryHandler(settings_menu.cb_settings, pattern="^settings:"))
+
     # Existing handlers (still gated by _is_owner for legacy Daria-only access)
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("memory", cmd_memory))
