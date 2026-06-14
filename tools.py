@@ -21,6 +21,7 @@ import a2a_client
 import calendar_client
 import config
 import contacts_client
+import diary
 import scheduled_actions
 import smart_home
 import weather_client
@@ -645,6 +646,26 @@ def cancel_scheduled_action(*, action_id: str, **_kwargs) -> dict:
     return _err(f"Не нашёл запланированное действие с id `{action_id}`.")
 
 
+def diary_write(*, text: str, **_kwargs) -> dict:
+    """Append an entry to the personal diary (local file + Google Doc mirror)."""
+    if not text or not text.strip():
+        return _err("Пустая запись — нечего сохранять.")
+    result = diary.append(text.strip())
+    if not result.get("ok"):
+        return _err(f"Не удалось записать: {result.get('error')}")
+    if result.get("doc_synced"):
+        return _ok("📓 Записала в дневник.")
+    return _ok(f"📓 Записала в локальный файл (Google Doc не доступен: {result.get('error')}).")
+
+
+def diary_read(*, period: str = "today", **_kwargs) -> dict:
+    """Read diary entries for a period: today, yesterday, week, month, all, YYYY-MM, YYYY-MM-DD."""
+    text = diary.read(period=period)
+    url = diary.doc_url()
+    suffix = f"\n\n🔗 [Открыть дневник в Google Docs]({url})" if url else ""
+    return _ok(text + suffix)
+
+
 # ─── Tool schema definitions for Anthropic API ───────────────────────────────
 
 TOOL_SCHEMAS = [
@@ -1007,6 +1028,48 @@ TOOL_SCHEMAS = [
         },
     },
     {
+        "name": "diary_write",
+        "description": (
+            "Append an entry to the user's personal diary (local file + Google Doc mirror). "
+            "Call this PROACTIVELY whenever the user shares something meaningful about her day: "
+            "events, encounters, feelings, observations, small wins, struggles, plans, thoughts. "
+            "Examples: 'сегодня встретила Аню', 'устала на работе', 'была интересная мысль про X', "
+            "'утром пробежала 5км', 'мама звонила, обсуждали поездку'. Also handles explicit "
+            "'запиши в дневник: …' commands. Write in third person past tense as Daria would "
+            "look back at it, e.g. 'Встретилась с Аней — обсудили проект Х, она расстроена из-за…'. "
+            "Skip trivial conversational filler ('привет', 'спасибо', 'ок'). One call per distinct "
+            "moment — don't batch unrelated topics into a single entry."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "text": {
+                    "type": "string",
+                    "description": "The diary entry text in Russian. Concise (1-3 sentences), reflective.",
+                },
+            },
+            "required": ["text"],
+        },
+    },
+    {
+        "name": "diary_read",
+        "description": (
+            "Read entries from the user's diary. Use for 'прочитай дневник', "
+            "'что я писала вчера', 'покажи дневник за июнь', 'что было на прошлой неделе'. "
+            "Period: 'today', 'yesterday', 'week', 'month', 'all', or specific 'YYYY-MM' / 'YYYY-MM-DD'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "period": {
+                    "type": "string",
+                    "description": "today | yesterday | week | month | all | YYYY-MM | YYYY-MM-DD",
+                    "default": "today",
+                },
+            },
+        },
+    },
+    {
         "name": "send_email",
         "description": (
             "Compose and prepare to send an email via Gmail. If to_email is missing, "
@@ -1058,4 +1121,6 @@ TOOL_FUNCS = {
     "schedule_action": schedule_action,
     "list_scheduled_actions": list_scheduled_actions,
     "cancel_scheduled_action": cancel_scheduled_action,
+    "diary_write": diary_write,
+    "diary_read": diary_read,
 }

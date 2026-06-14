@@ -141,6 +141,14 @@ def _summarize_and_save(messages: list[dict], session_ts: str) -> None:
 
     logger.info("Session summary saved for %s", date_str)
 
+    # Mirror the session summary into the personal diary as today's wrap-up.
+    # Lazy import to avoid pulling Google API libs at module load.
+    try:
+        import diary
+        diary.append(f"Резюме сессии: {summary_text}")
+    except Exception as e:
+        logger.warning("Diary mirror of session summary failed: %s", e)
+
 
 def get_recent_summaries(n: int = _SUMMARIES_IN_CONTEXT) -> list[dict]:
     if not os.path.exists(_SUMMARIES_FILE):

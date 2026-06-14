@@ -11,6 +11,8 @@ last_digest.txt
 scheduled_actions.json
 a2a_clients.json
 a2a_agents.json
+diary.md
+diary_doc.json
 whatsapp_bridge/auth_session/
 whatsapp_bridge/node_modules/
 

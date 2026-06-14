@@ -27,6 +27,10 @@ A2A_AGENT_URL = os.environ.get("A2A_AGENT_URL", "")  # set after Cloudflare tunn
 GOOGLE_CREDENTIALS_FILE = "google_credentials.json"
 GOOGLE_TOKEN_FILE = "google_token.json"
 
+DIARY_FILE = os.environ.get("DIARY_FILE", "diary.md")
+DIARY_DOC_CACHE = os.environ.get("DIARY_DOC_CACHE", "diary_doc.json")
+DIARY_DOC_TITLE = os.environ.get("DIARY_DOC_TITLE", "Личный дневник Дарьи")
+
 SHORT_TASK_CALENDAR = "Задачи краткосрочные"
 LONG_TASK_CALENDAR = "Задачи долгосрочные"
 PROGRESS_CALENDAR = "Прогресс дня"
