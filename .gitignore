@@ -16,6 +16,9 @@ diary_doc.json
 whatsapp_bridge/auth_session/
 whatsapp_bridge/node_modules/
 
+# Multi-tenant SaaS: per-user data and SQLite DB
+data/
+
 # Python
 venv/
 __pycache__/
