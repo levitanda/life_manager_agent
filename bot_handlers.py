@@ -70,7 +70,8 @@ async def cmd_memory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     await _reply_split(update, "\n".join(lines))
 
 
-async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Inline help for already-onboarded users. /start is handled by onboarding."""
     if not _is_owner(update):
         return
     await update.message.reply_text(
@@ -80,6 +81,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/digest — дайджест прямо сейчас\n"
         "/memory — моя долгосрочная память о тебе\n"
         "/progress — записать прогресс за день\n"
+        "/promo КОД — активировать промокод\n"
+        "/cancel — отменить подписку\n"
         "/help — эта справка"
     )
 
@@ -255,7 +258,8 @@ async def cmd_progress_receive(update: Update, context: ContextTypes.DEFAULT_TYP
     return ConversationHandler.END
 
 
-async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def _conversation_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Inline ConversationHandler fallback — used to exit /progress state, not user-facing."""
     await update.message.reply_text("Отмена.")
     return ConversationHandler.END
 
@@ -808,14 +812,28 @@ async def _send_evening_checkin(app: Application) -> None:
 
 
 def register_handlers(app: Application) -> None:
+    import onboarding
+
+    # `progress` conversation cancel fallback stays internal (renamed).
     progress_conv = ConversationHandler(
         entry_points=[CommandHandler("progress", cmd_progress_start)],
         states={WAITING_PROGRESS: [MessageHandler(filters.TEXT & ~filters.COMMAND, cmd_progress_receive)]},
-        fallbacks=[CommandHandler("cancel", cmd_cancel)],
+        # `/cancel` inside the progress conversation cancels the progress flow,
+        # not the subscription. Outside of progress, `/cancel` hits the
+        # subscription cancel handler registered below.
+        fallbacks=[CommandHandler("cancel", _conversation_cancel)],
     )
 
-    app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("help", cmd_start))
+    # New onboarding / billing commands — keep these BEFORE the catch-all
+    # text handler so they don't get eaten.
+    app.add_handler(CommandHandler("start", onboarding.cmd_start))
+    app.add_handler(CommandHandler("promo", onboarding.cmd_promo))
+    app.add_handler(CommandHandler("subscribe", onboarding.cmd_subscribe))
+    app.add_handler(CommandHandler("cancel", onboarding.cmd_cancel))
+    app.add_handler(CallbackQueryHandler(onboarding.cb_onboard, pattern="^onboard:"))
+
+    # Existing handlers (still gated by _is_owner for legacy Daria-only access)
+    app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("memory", cmd_memory))
     app.add_handler(CommandHandler("add", cmd_add))
     app.add_handler(CommandHandler("tasks", cmd_tasks))
