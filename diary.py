@@ -314,3 +314,74 @@ def doc_url() -> Optional[str]:
     """Public URL of the diary Google Doc (or None if not created yet)."""
     doc_id = _load_doc_id()
     return f"https://docs.google.com/document/d/{doc_id}/edit" if doc_id else None
+
+
+def backfill_from_summaries(summaries_file: str = "session_summaries.jsonl") -> dict:
+    """One-time backfill: pull past session summaries into diary sections.
+
+    For each calendar day that has at least one session summary AND is not
+    already present in the diary, prepends a new day section containing all
+    that day's summaries as `[HH:MM] Из памяти: …` paragraphs.
+
+    Safe to re-run: days already in the diary are skipped, not overwritten.
+    """
+    if not os.path.exists(summaries_file):
+        return {"ok": False, "error": f"summaries file not found: {summaries_file}"}
+
+    by_date: dict[str, list[tuple[str, str]]] = {}
+    with open(summaries_file, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except Exception:
+                continue
+            ts = entry.get("date", "")
+            summ = (entry.get("summary") or "").strip()
+            if not ts or not summ:
+                continue
+            date_part, _, time_part = ts.partition(" ")
+            try:
+                datetime.date.fromisoformat(date_part)
+            except ValueError:
+                continue
+            by_date.setdefault(date_part, []).append((time_part or "23:30", summ))
+
+    existing = _read_local()
+    existing_dates = set(_DAY_HEADER_RE.findall(existing))
+
+    added: list[str] = []
+    skipped: list[str] = []
+    # Oldest first so after sequential prepends the newest day ends up on top.
+    for date_str in sorted(by_date.keys()):
+        if date_str in existing_dates:
+            skipped.append(date_str)
+            continue
+        try:
+            d = datetime.date.fromisoformat(date_str)
+        except ValueError:
+            continue
+        paragraphs = []
+        for time_str, summ in sorted(by_date[date_str]):
+            cleaned = re.sub(r"^#+\s.*?\n+", "", summ).strip()
+            paragraphs.append(f"[{time_str}] Из памяти: {cleaned}")
+        header = _format_day_header(d)
+        body = "\n\n".join(paragraphs)
+        _prepend_to_local(header, body)
+        try:
+            doc_id = _get_or_create_doc_id()
+            _prepend_to_doc(doc_id, f"{header}\n{body}\n\n")
+        except Exception as e:
+            logger.warning("Diary backfill: Google Doc sync failed for %s: %s", date_str, e)
+        added.append(date_str)
+        existing_dates.add(date_str)
+
+    return {
+        "ok": True,
+        "days_added": len(added),
+        "days_skipped": len(skipped),
+        "added_dates": added,
+        "skipped_dates": skipped,
+    }

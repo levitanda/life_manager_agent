@@ -176,3 +176,46 @@ def test_diary_read_tool(tmp_diary, mock_google):
     r = tools.diary_read(period="today")
     assert r["status"] == "ok"
     assert "сегодня было хорошо" in r["summary"]
+
+
+# ─── Backfill from session summaries ──────────────────────────────────────────
+
+def test_backfill_adds_past_days(tmp_diary, mock_google, tmp_path):
+    import diary
+    summaries = tmp_path / "summaries.jsonl"
+    summaries.write_text(
+        '{"date": "2026-05-17 22:29", "summary": "# Резюме беседы\\n\\nГоворили про умный дом."}\n'
+        '{"date": "2026-05-18 16:07", "summary": "Отправила сообщения через WhatsApp."}\n',
+        encoding="utf-8",
+    )
+    r = diary.backfill_from_summaries(str(summaries))
+    assert r["ok"] is True
+    assert r["days_added"] == 2
+    content = tmp_diary["diary_file"].read_text(encoding="utf-8")
+    assert "2026-05-17" in content
+    assert "Говорили про умный дом" in content
+    assert "Резюме беседы" not in content  # markdown header stripped
+
+
+def test_backfill_skips_existing_days(tmp_diary, mock_google, tmp_path):
+    import diary
+    diary.append("сегодняшний пост", when=_now_at(9, 0))
+    today_iso = _now_at(9, 0).date().isoformat()
+    summaries = tmp_path / "summaries.jsonl"
+    summaries.write_text(
+        f'{{"date": "{today_iso} 23:30", "summary": "сегодняшнее резюме"}}\n'
+        '{"date": "2026-05-17 22:29", "summary": "старое резюме"}\n',
+        encoding="utf-8",
+    )
+    r = diary.backfill_from_summaries(str(summaries))
+    assert r["days_added"] == 1
+    assert r["days_skipped"] == 1
+    content = tmp_diary["diary_file"].read_text(encoding="utf-8")
+    assert "старое резюме" in content
+    assert "сегодняшнее резюме" not in content  # today's section preserved as-is
+
+
+def test_backfill_missing_file(tmp_diary, mock_google):
+    import diary
+    r = diary.backfill_from_summaries("/nonexistent/path.jsonl")
+    assert r["ok"] is False

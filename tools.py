@@ -666,6 +666,30 @@ def diary_read(*, period: str = "today", **_kwargs) -> dict:
     return _ok(text + suffix)
 
 
+def diary_backfill(**_kwargs) -> dict:
+    """Backfill diary from existing session_summaries.jsonl.
+
+    Adds a section per past day that's missing from the diary. Idempotent —
+    days already present in the diary are skipped.
+    """
+    r = diary.backfill_from_summaries()
+    if not r.get("ok"):
+        return _err(f"Не удалось: {r.get('error')}")
+    added = r.get("days_added", 0)
+    skipped = r.get("days_skipped", 0)
+    if added == 0 and skipped == 0:
+        return _ok("В памяти не нашлось прошлых сессий для бэкфилла.")
+    parts = [f"📓 Добавлено в дневник: *{added}* дн."]
+    if r.get("added_dates"):
+        parts.append("Даты: " + ", ".join(r["added_dates"]))
+    if skipped:
+        parts.append(f"Пропущено (уже в дневнике): {skipped} дн.")
+    url = diary.doc_url()
+    if url:
+        parts.append(f"🔗 [Открыть дневник]({url})")
+    return _ok("\n".join(parts))
+
+
 # ─── Tool schema definitions for Anthropic API ───────────────────────────────
 
 TOOL_SCHEMAS = [
@@ -1070,6 +1094,17 @@ TOOL_SCHEMAS = [
         },
     },
     {
+        "name": "diary_backfill",
+        "description": (
+            "One-time backfill: pull past session summaries the bot already has "
+            "in memory and write them into the diary as retroactive entries. "
+            "Use when the user asks 'заполни дневник прошлыми днями', "
+            "'напиши задним числом что помнишь', 'добавь в дневник старые сессии'. "
+            "Idempotent — days already in the diary are not overwritten."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
         "name": "send_email",
         "description": (
             "Compose and prepare to send an email via Gmail. If to_email is missing, "
@@ -1123,4 +1158,5 @@ TOOL_FUNCS = {
     "cancel_scheduled_action": cancel_scheduled_action,
     "diary_write": diary_write,
     "diary_read": diary_read,
+    "diary_backfill": diary_backfill,
 }
