@@ -25,6 +25,7 @@ import scheduled_actions
 import smart_home
 import weather_client
 import whatsapp_client
+import whatsapp_summary
 
 logger = logging.getLogger(__name__)
 
@@ -402,9 +403,11 @@ def whatsapp_list_groups(**_kwargs) -> dict:
 
 
 def whatsapp_review_unread(**_kwargs) -> dict:
-    """Fetch all unread WhatsApp chats with recent message context for review.
+    """Return a prioritized Haiku-generated summary of unread WhatsApp chats.
 
-    The agent uses this to summarize what's been said and suggest responses.
+    Does NOT return raw messages — the user reads those in WhatsApp itself.
+    Output is a 🔴/🟡/⚪ priority breakdown so the agent (and user) sees who
+    needs a reply and what each conversation is about.
     """
     st = whatsapp_client.status()
     if not st.get("ready"):
@@ -413,17 +416,13 @@ def whatsapp_review_unread(**_kwargs) -> dict:
     if not chats:
         return _ok("В WhatsApp нет непрочитанных сообщений.")
 
-    blocks = [f"💬 *Непрочитанные WhatsApp ({len(chats)} чатов):*"]
-    for chat in chats:
-        name = chat.get("name") or chat["id"]
-        n = chat.get("unreadCount", 0)
-        blocks.append(f"\n*{name}* — {n} нов.:")
-        for m in chat.get("recentMessages", [])[-10:]:
-            sender = m.get("senderName") or ("я" if m.get("fromMe") else "?")
-            text = (m.get("text") or "")[:240]
-            prefix = "→" if m.get("fromMe") else "·"
-            blocks.append(f"  {prefix} {sender}: {text}")
-    return _ok("\n".join(blocks))
+    summary = whatsapp_summary.summarize_unread_chats(chats)
+    if not summary:
+        total = sum(c.get("unreadCount", 0) for c in chats)
+        return _ok(f"Непрочитанных {total} в {len(chats)} чатах, но содержимого для сводки нет (медиа/стикеры).")
+
+    header = f"💬 *WhatsApp — {len(chats)} чат(а) с непрочитанными:*\n\n"
+    return _ok(header + summary)
 
 
 def whatsapp_send_to_any(*, chat_query: str, message: str, **_kwargs) -> dict:

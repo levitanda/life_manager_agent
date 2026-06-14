@@ -82,36 +82,31 @@ def test_generate_morning_digest_with_recent_messages():
     assert "НЕДАВНИЙ РАЗГОВОР" in prompt
 
 
-def test_generate_morning_digest_with_whatsapp_unread():
-    """Unread WhatsApp messages should appear in the prompt."""
-    unread = [{
-        "id": "120363@g.us", "name": "Семья", "unreadCount": 2,
-        "recentMessages": [
-            {"senderName": "Аня", "text": "что планы на сегодня?", "fromMe": False, "ts": 1},
-        ]
-    }]
+def test_generate_morning_digest_with_whatsapp_summary():
+    """Pre-built WhatsApp summary should be inserted verbatim into the prompt."""
+    summary = "🔴 ВАЖНО ОТВЕТИТЬ\n• Семья — мама спрашивает про планы на выходные"
     with patch("anthropic.Anthropic") as mock_cls:
         mock_cls.return_value = _mock_claude()
         digest_module.generate_morning_digest(
             SAMPLE_EVENTS, SAMPLE_SHORT, SAMPLE_LONG, None,
-            whatsapp_unread=unread,
+            whatsapp_summary=summary,
         )
         prompt = mock_cls.return_value.messages.create.call_args[1]["messages"][0]["content"]
-    assert "Семья" in prompt
-    assert "что планы на сегодня" in prompt
     assert "WHATSAPP" in prompt
+    assert "мама спрашивает про планы" in prompt
+    assert "ВАЖНО ОТВЕТИТЬ" in prompt
 
 
-def test_format_whatsapp_unread_empty():
-    assert digest_module._format_whatsapp_unread([]) == ""
-
-
-def test_format_whatsapp_unread_truncates_messages():
-    long_msg = "x" * 1000
-    chats = [{"name": "Group", "unreadCount": 1,
-              "recentMessages": [{"senderName": "X", "text": long_msg, "fromMe": False}]}]
-    out = digest_module._format_whatsapp_unread(chats)
-    assert len(out) < 400  # message text truncated to 180
+def test_generate_morning_digest_without_whatsapp_summary():
+    """Empty/None summary should not add a WhatsApp section to the prompt."""
+    with patch("anthropic.Anthropic") as mock_cls:
+        mock_cls.return_value = _mock_claude()
+        digest_module.generate_morning_digest(
+            SAMPLE_EVENTS, SAMPLE_SHORT, SAMPLE_LONG, None,
+            whatsapp_summary=None,
+        )
+        prompt = mock_cls.return_value.messages.create.call_args[1]["messages"][0]["content"]
+    assert "WHATSAPP (готовая сводка" not in prompt
 
 
 def test_generate_morning_digest_with_session_summaries():

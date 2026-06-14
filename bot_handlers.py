@@ -32,6 +32,7 @@ import gmail_client
 import news_client
 import birthday_client
 import whatsapp_client
+import whatsapp_summary
 import parser
 import pushover_client
 
@@ -697,13 +698,14 @@ async def _send_morning_digest(app: Application, target_date: datetime.date | No
             recent_msgs = conversation.get_history()
             summaries = conversation.get_recent_summaries()
             wa_unread = whatsapp_client.unread_chats() if is_today else []
+            wa_summary = whatsapp_summary.summarize_unread_chats(wa_unread) if wa_unread else ""
 
             text = digest_module.generate_morning_digest(
                 events, short, long_, yesterday, emails, target_date, weather,
                 news=news or None, birthdays=birthdays or None,
                 recent_messages=recent_msgs or None,
                 summaries=summaries or None,
-                whatsapp_unread=wa_unread or None,
+                whatsapp_summary=wa_summary or None,
             )
 
             with open(config.ALICE_DIGEST_FILE, "w", encoding="utf-8") as f:

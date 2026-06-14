@@ -207,12 +207,14 @@ def test_tool_review_unread_with_chats():
             {"senderName": None, "text": "ok", "fromMe": True, "ts": 2},
         ]
     }]
+    fake_summary = "🔴 ВАЖНО ОТВЕТИТЬ\n• Семья — мама спрашивает, когда придёшь"
     with patch("whatsapp_client.status", return_value={"ready": True}), \
-         patch("whatsapp_client.unread_chats", return_value=chats):
+         patch("whatsapp_client.unread_chats", return_value=chats), \
+         patch("whatsapp_summary.summarize_unread_chats", return_value=fake_summary):
         r = tools.whatsapp_review_unread()
-    assert "Семья" in r["summary"]
-    assert "Мама" in r["summary"]
-    assert "когда придёшь" in r["summary"]
+    assert r["status"] == "ok"
+    assert fake_summary in r["summary"]
+    assert "1 чат" in r["summary"]
 
 
 def test_tool_review_unread_bridge_down():
