@@ -52,16 +52,24 @@ def _serializer() -> URLSafeTimedSerializer:
     return URLSafeTimedSerializer(secret, salt="oauth-state-v1")
 
 
-def sign_state(user_id: int) -> str:
-    return _serializer().dumps({"user_id": int(user_id)})
+def sign_state(user_id: int, code_verifier: Optional[str] = None) -> str:
+    """Sign a state token. `code_verifier` (PKCE) is optional — included by
+    /oauth/start so /oauth/callback can complete the exchange with the same
+    verifier Google saw at consent time."""
+    payload: dict = {"user_id": int(user_id)}
+    if code_verifier is not None:
+        payload["cv"] = code_verifier
+    return _serializer().dumps(payload)
 
 
-def verify_state(token: str) -> int:
+def verify_state(token: str) -> dict:
+    """Returns the decoded payload {user_id, cv?}."""
     try:
         data = _serializer().loads(token, max_age=STATE_MAX_AGE_SECONDS)
     except BadSignature as e:
         raise HTTPException(status_code=400, detail=f"Invalid state: {e}")
-    return int(data["user_id"])
+    data["user_id"] = int(data["user_id"])
+    return data
 
 
 # ─── App factory ──────────────────────────────────────────────────────────────
@@ -78,11 +86,12 @@ def create_app() -> FastAPI:
     async def oauth_start(state: str) -> RedirectResponse:
         """Redirect the user to Google's consent screen.
 
-        `state` is a signed token that encodes the user_id (created by the
-        bot when it sent the user the OAuth link).
+        Decodes user_id from `state`, builds an authorization URL with PKCE,
+        and re-signs a fresh state that bakes in the code_verifier so the
+        callback can complete the exchange.
         """
-        user_id = verify_state(state)
-        # Lazy import: keeps test-mode startup snappy
+        data = verify_state(state)
+        user_id = data["user_id"]
         from google_auth_oauthlib.flow import Flow
         import config
 
@@ -97,13 +106,28 @@ def create_app() -> FastAPI:
             prompt="consent",
             state=state,
         )
-        logger.info("OAuth start for user_id=%s", user_id)
+        # If the Flow generated a PKCE verifier, re-sign state with it and
+        # patch the URL so the verifier survives the round-trip.
+        verifier = getattr(flow, "code_verifier", None)
+        if verifier:
+            import urllib.parse as up
+            new_state = sign_state(user_id, code_verifier=verifier)
+            parts = up.urlsplit(url)
+            q = dict(up.parse_qsl(parts.query, keep_blank_values=True))
+            q["state"] = new_state
+            url = up.urlunsplit((
+                parts.scheme, parts.netloc, parts.path,
+                up.urlencode(q), parts.fragment,
+            ))
+        logger.info("OAuth start for user_id=%s (pkce=%s)", user_id, bool(verifier))
         return RedirectResponse(url, status_code=302)
 
     @app.get("/oauth/callback")
     async def oauth_callback(code: str, state: str) -> HTMLResponse:
         """Exchange the auth code for tokens and persist encrypted in DB."""
-        user_id = verify_state(state)
+        data = verify_state(state)
+        user_id = data["user_id"]
+        code_verifier = data.get("cv")
         from google_auth_oauthlib.flow import Flow
         import config
         import crypto
@@ -116,6 +140,8 @@ def create_app() -> FastAPI:
             redirect_uri=OAUTH_REDIRECT_URI,
             state=state,
         )
+        if code_verifier:
+            flow.code_verifier = code_verifier
         flow.fetch_token(code=code)
         creds = flow.credentials
         payload = json.loads(creds.to_json())

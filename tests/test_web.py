@@ -50,7 +50,15 @@ def test_health(client):
 def test_sign_and_verify_state_roundtrip(app):
     import web
     token = web.sign_state(42)
-    assert web.verify_state(token) == 42
+    assert web.verify_state(token)["user_id"] == 42
+
+
+def test_sign_and_verify_state_with_pkce_verifier(app):
+    import web
+    token = web.sign_state(42, code_verifier="abc123")
+    decoded = web.verify_state(token)
+    assert decoded["user_id"] == 42
+    assert decoded["cv"] == "abc123"
 
 
 def test_verify_state_rejects_garbage(app):
@@ -69,11 +77,37 @@ def test_oauth_start_redirects_to_google(client, app):
     state = web.sign_state(1)
 
     fake_flow = MagicMock()
-    fake_flow.authorization_url.return_value = ("https://accounts.google.com/o/oauth2/auth?xyz", state)
+    fake_flow.code_verifier = None  # no PKCE → URL passes through unchanged
+    fake_flow.authorization_url.return_value = (
+        f"https://accounts.google.com/o/oauth2/auth?state={state}&scope=x", state,
+    )
     with patch("google_auth_oauthlib.flow.Flow.from_client_secrets_file", return_value=fake_flow):
         r = client.get(f"/oauth/start?state={state}", follow_redirects=False)
     assert r.status_code == 302
     assert "accounts.google.com" in r.headers["location"]
+
+
+def test_oauth_start_rewrites_state_when_pkce_present(client, app):
+    """If the Flow generated a code_verifier, the redirect URL must contain a
+    freshly-signed state that bakes in that verifier."""
+    import web
+    state = web.sign_state(1)
+
+    fake_flow = MagicMock()
+    fake_flow.code_verifier = "pkce-verifier-xyz"
+    fake_flow.authorization_url.return_value = (
+        f"https://accounts.google.com/o/oauth2/auth?state={state}&scope=x", state,
+    )
+    with patch("google_auth_oauthlib.flow.Flow.from_client_secrets_file", return_value=fake_flow):
+        r = client.get(f"/oauth/start?state={state}", follow_redirects=False)
+    assert r.status_code == 302
+    import urllib.parse as up
+    qs = dict(up.parse_qsl(up.urlsplit(r.headers["location"]).query))
+    new_state = qs["state"]
+    assert new_state != state
+    decoded = web.verify_state(new_state)
+    assert decoded["user_id"] == 1
+    assert decoded["cv"] == "pkce-verifier-xyz"
 
 
 def test_oauth_start_bad_state(client):
