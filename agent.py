@@ -18,16 +18,16 @@ import os
 from pathlib import Path
 from typing import Optional
 
-import anthropic
 import pytz
 
 import config
+import llm
 import tools
 
 logger = logging.getLogger(__name__)
 
 MAX_ITERATIONS = 6
-MODEL = "claude-sonnet-4-6"
+MODEL = llm.MODEL_LLAMA_70B
 PERSONALITY_PATH = Path(__file__).parent / "personality.json"
 
 
@@ -106,77 +106,79 @@ def run_agent(
     system = _build_system_prompt(persona, active_tasks or [], summaries or [])
     messages = _build_messages(text, history)
 
-    client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
-
     text_parts: list[str] = []
     actions: list[dict] = []
 
     for iteration in range(MAX_ITERATIONS):
         try:
-            resp = client.messages.create(
-                model=MODEL,
-                max_tokens=2048,
-                system=[{
-                    "type": "text",
-                    "text": system,
-                    "cache_control": {"type": "ephemeral"},
-                }],
+            result = llm.chat(
+                MODEL,
+                system,
+                messages,
                 tools=tools.TOOL_SCHEMAS,
-                messages=messages,
+                max_tokens=2048,
             )
         except Exception as e:
             logger.error("agent API call failed: %s", e)
             return {"text": "Не получилось обработать запрос, попробуй ещё раз.", "actions": []}
 
-        # Collect any text blocks
-        for block in resp.content:
-            if block.type == "text" and block.text.strip():
-                text_parts.append(block.text.strip())
+        # Collect any text from the model reply
+        if result["text"]:
+            text_parts.append(result["text"])
 
-        if resp.stop_reason != "tool_use":
+        if result["stop_reason"] != "tool_use":
             break
 
-        # Dispatch each tool_use block
-        messages.append({"role": "assistant", "content": resp.content})
+        # Re-construct the assistant turn for the next iteration
+        assistant_blocks: list[dict] = []
+        if result["text"]:
+            assistant_blocks.append({"type": "text", "text": result["text"]})
+        for tu in result["tool_uses"]:
+            assistant_blocks.append({
+                "type": "tool_use",
+                "id": tu["id"],
+                "name": tu["name"],
+                "input": tu["input"],
+            })
+        messages.append({"role": "assistant", "content": assistant_blocks})
+
         tool_results = []
         stop_for_confirmation = False
 
-        for block in resp.content:
-            if block.type != "tool_use":
-                continue
-            func = tools.TOOL_FUNCS.get(block.name)
+        for tu in result["tool_uses"]:
+            func = tools.TOOL_FUNCS.get(tu["name"])
             if not func:
                 tool_results.append({
                     "type": "tool_result",
-                    "tool_use_id": block.id,
-                    "content": f"Unknown tool: {block.name}",
+                    "tool_use_id": tu["id"],
+                    "content": f"Unknown tool: {tu['name']}",
                     "is_error": True,
                 })
                 continue
             try:
-                result = func(
-                    **block.input,
+                tool_result = func(
+                    **tu["input"],
                     _context=context,
                     _active_tasks=active_tasks or [],
                     _user_id=user_id,
                 )
             except Exception as e:
-                logger.exception("tool %s crashed", block.name)
-                result = {"status": "error", "summary": f"Внутренняя ошибка: {e}"}
+                logger.exception("tool %s crashed", tu["name"])
+                tool_result = {"status": "error", "summary": f"Внутренняя ошибка: {e}"}
 
-            text_parts.append(result.get("summary", ""))
+            text_parts.append(tool_result.get("summary", ""))
 
-            data = result.get("data") or {}
+            data = tool_result.get("data") or {}
             if data.get("action"):
                 actions.append({"action": data["action"], "target_date": data.get("target_date")})
-            if result.get("status") == "needs_confirmation":
+            if tool_result.get("status") == "needs_confirmation":
                 actions.append({"action": "needs_confirmation", "kind": data.get("kind", "")})
                 stop_for_confirmation = True
 
             tool_results.append({
                 "type": "tool_result",
-                "tool_use_id": block.id,
-                "content": result.get("summary", "ok"),
+                "tool_use_id": tu["id"],
+                "content": tool_result.get("summary", "ok"),
             })
 
         messages.append({"role": "user", "content": tool_results})

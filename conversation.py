@@ -20,10 +20,10 @@ import os
 from pathlib import Path
 from typing import Optional
 
-import anthropic
 import pytz
 
 import config
+import llm
 
 logger = logging.getLogger(__name__)
 
@@ -136,24 +136,22 @@ def _summarize_and_save(
         role = "Пользователь" if msg["role"] == "user" else "Ассистент"
         lines.append(f"{role}: {msg['content'][:400]}")
 
+    prompt = (
+        "Составь краткое резюме этой беседы (5-7 предложений на русском).\n"
+        "Включи:\n"
+        "- Что обсуждалось и что было сделано (задачи, письма, планы)\n"
+        "- Важные факты о пользователе (настроение, события, упомянутые люди)\n"
+        "- Что полезно помнить в будущих разговорах\n\n"
+        "Беседа:\n" + "\n".join(lines)
+    )
     try:
-        client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
-        result = client.messages.create(
-            model="claude-haiku-4-5-20251001",
+        result = llm.chat(
+            llm.MODEL_NOVA_LITE,
+            "",
+            [{"role": "user", "content": prompt}],
             max_tokens=400,
-            messages=[{
-                "role": "user",
-                "content": (
-                    "Составь краткое резюме этой беседы (5-7 предложений на русском).\n"
-                    "Включи:\n"
-                    "- Что обсуждалось и что было сделано (задачи, письма, планы)\n"
-                    "- Важные факты о пользователе (настроение, события, упомянутые люди)\n"
-                    "- Что полезно помнить в будущих разговорах\n\n"
-                    "Беседа:\n" + "\n".join(lines)
-                ),
-            }],
         )
-        summary_text = result.content[0].text.strip()
+        summary_text = result["text"].strip()
     except Exception as e:
         logger.warning("Summary generation failed: %s", e)
         summary_text = f"Сессия без резюме (ошибка: {e})"

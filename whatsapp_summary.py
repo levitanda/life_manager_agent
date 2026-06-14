@@ -11,13 +11,12 @@ raw messages into a Sonnet prompt. Output is a prioritized digest:
 
 import logging
 
-import anthropic
-
 import config
+import llm
 
 logger = logging.getLogger(__name__)
 
-MODEL = "claude-haiku-4-5-20251001"
+MODEL = llm.MODEL_NOVA_LITE
 MAX_CHATS = 25
 MAX_MSGS_PER_CHAT = 15
 
@@ -81,13 +80,13 @@ def summarize_unread_chats(unread: list[dict]) -> str:
 {raw}"""
 
     try:
-        client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
-        resp = client.messages.create(
-            model=MODEL,
+        result = llm.chat(
+            MODEL,
+            "",
+            [{"role": "user", "content": prompt}],
             max_tokens=800,
-            messages=[{"role": "user", "content": prompt}],
         )
-        return resp.content[0].text.strip()
+        return result["text"].strip()
     except Exception as e:
         logger.warning("WhatsApp summary failed: %s", e)
         total = sum(c.get("unreadCount", 0) for c in unread)

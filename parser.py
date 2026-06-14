@@ -4,10 +4,10 @@ import datetime
 import json
 import logging
 
-import anthropic
 import pytz
 
 import config
+import llm
 
 logger = logging.getLogger(__name__)
 
@@ -18,14 +18,13 @@ _SYSTEM = (
 
 
 def _call(prompt: str, max_tokens: int = 300) -> dict:
-    client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
-    msg = client.messages.create(
-        model="claude-haiku-4-5-20251001",
+    result = llm.chat(
+        llm.MODEL_NOVA_LITE,
+        _SYSTEM,
+        [{"role": "user", "content": prompt}],
         max_tokens=max_tokens,
-        system=_SYSTEM,
-        messages=[{"role": "user", "content": prompt}],
     )
-    text = msg.content[0].text.strip()
+    text = result["text"].strip()
     if text.startswith("```"):
         text = text.split("```")[1]
         if text.startswith("json"):

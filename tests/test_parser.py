@@ -7,20 +7,14 @@ import pytest
 import parser
 
 
-def _mock_call(response: dict):
-    mock = MagicMock()
-    mock.content = [MagicMock(text=str(response).replace("'", '"'))]
-    return mock
+def _llm_result(text: str) -> dict:
+    return {"text": text, "tool_uses": [], "stop_reason": "end_turn", "raw": {}}
 
 
 def _parse(text: str, response_dict: dict) -> dict:
     import json
     json_str = json.dumps(response_dict)
-    mock_msg = MagicMock()
-    mock_msg.content = [MagicMock(text=json_str)]
-
-    with patch("anthropic.Anthropic") as mock_client_cls:
-        mock_client_cls.return_value.messages.create.return_value = mock_msg
+    with patch("llm.chat", return_value=_llm_result(json_str)):
         return parser.parse_message(text)
 
 
@@ -74,7 +68,6 @@ def test_multi_action_parse():
 # ─── fallback on parse error ──────────────────────────────────────────────────
 
 def test_parse_message_fallback_on_error():
-    with patch("anthropic.Anthropic") as mock_client_cls:
-        mock_client_cls.return_value.messages.create.side_effect = Exception("network error")
+    with patch("llm.chat", side_effect=Exception("network error")):
         result = parser.parse_message("hello")
     assert "intent" in result or "actions" in result

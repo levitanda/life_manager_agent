@@ -3,10 +3,10 @@
 import datetime
 from typing import Optional
 
-import anthropic
 import pytz
 
 import config
+import llm
 
 
 def _format_events(events: list[dict]) -> str:
@@ -172,13 +172,13 @@ def generate_morning_digest(
 
 Будь конкретным и живым. Если в разговоре было что-то эмоционально важное (заболел, устала, переживает) — обязательно среагируй на это в дайджесте. Не игнорируй контекст. Не повторяй просто список — дай осмысленные рекомендации."""
 
-    client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
-    message = client.messages.create(
-        model="claude-sonnet-4-6",
+    result = llm.chat(
+        llm.MODEL_LLAMA_70B,
+        "",
+        [{"role": "user", "content": prompt}],
         max_tokens=4096,
-        messages=[{"role": "user", "content": prompt}],
     )
-    return message.content[0].text
+    return result["text"]
 
 
 def generate_weekly_digest(
@@ -220,13 +220,13 @@ def generate_weekly_digest(
 
 Пиши конкретно и по делу, без пустых фраз."""
 
-    client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
-    message = client.messages.create(
-        model="claude-sonnet-4-6",
+    result = llm.chat(
+        llm.MODEL_LLAMA_70B,
+        "",
+        [{"role": "user", "content": prompt}],
         max_tokens=4096,
-        messages=[{"role": "user", "content": prompt}],
     )
-    return message.content[0].text
+    return result["text"]
 
 
 def generate_evening_checkin() -> str:
@@ -236,15 +236,15 @@ def generate_evening_checkin() -> str:
         "понедельника", "вторника", "среды", "четверга", "пятницы", "субботы", "воскресенья"
     ][today.weekday()]
 
-    client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
-    message = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=256,
-        messages=[
-            {
-                "role": "user",
-                "content": f"Напиши короткое (2-3 предложения) дружелюбное вечернее сообщение для {weekday_ru}. Попроси рассказать о прогрессе по задачам за день: что сделано, что нет, что перенесено. Без вступлений, сразу текст сообщения.",
-            }
-        ],
+    prompt = (
+        f"Напиши короткое (2-3 предложения) дружелюбное вечернее сообщение для {weekday_ru}. "
+        "Попроси рассказать о прогрессе по задачам за день: что сделано, что нет, что перенесено. "
+        "Без вступлений, сразу текст сообщения."
     )
-    return message.content[0].text
+    result = llm.chat(
+        llm.MODEL_LLAMA_70B,
+        "",
+        [{"role": "user", "content": prompt}],
+        max_tokens=256,
+    )
+    return result["text"]

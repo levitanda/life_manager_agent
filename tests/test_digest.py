@@ -18,16 +18,23 @@ SAMPLE_NEWS = [
 SAMPLE_BIRTHDAYS = [{"name": "Alice", "email": "alice@example.com"}]
 
 
-def _mock_claude(text: str = "Digest text"):
-    mock_msg = MagicMock()
-    mock_msg.content = [MagicMock(text=text)]
-    mock_client = MagicMock()
-    mock_client.messages.create.return_value = mock_msg
-    return mock_client
+def _llm_result(text: str = "Digest text") -> dict:
+    return {"text": text, "tool_uses": [], "stop_reason": "end_turn", "raw": {}}
+
+
+def _prompt_from_mock(mock_chat) -> str:
+    """Extract the user-message content from the latest llm.chat call."""
+    args, kwargs = mock_chat.call_args
+    # signature: chat(model, system, messages, ...)
+    if "messages" in kwargs:
+        messages = kwargs["messages"]
+    else:
+        messages = args[2]
+    return messages[0]["content"]
 
 
 def test_generate_morning_digest_basic():
-    with patch("anthropic.Anthropic", return_value=_mock_claude("Good morning!")):
+    with patch("llm.chat", return_value=_llm_result("Good morning!")):
         result = digest_module.generate_morning_digest(
             SAMPLE_EVENTS, SAMPLE_SHORT, SAMPLE_LONG, None
         )
@@ -35,33 +42,30 @@ def test_generate_morning_digest_basic():
 
 
 def test_generate_morning_digest_with_news():
-    with patch("anthropic.Anthropic") as mock_cls:
-        mock_cls.return_value = _mock_claude()
+    with patch("llm.chat", return_value=_llm_result()) as mock_chat:
         digest_module.generate_morning_digest(
             SAMPLE_EVENTS, SAMPLE_SHORT, SAMPLE_LONG, None, news=SAMPLE_NEWS
         )
-        prompt = mock_cls.return_value.messages.create.call_args[1]["messages"][0]["content"]
+        prompt = _prompt_from_mock(mock_chat)
     assert "Кан 11" in prompt
     assert "News A" in prompt
 
 
 def test_generate_morning_digest_with_birthdays():
-    with patch("anthropic.Anthropic") as mock_cls:
-        mock_cls.return_value = _mock_claude()
+    with patch("llm.chat", return_value=_llm_result()) as mock_chat:
         digest_module.generate_morning_digest(
             SAMPLE_EVENTS, SAMPLE_SHORT, SAMPLE_LONG, None, birthdays=SAMPLE_BIRTHDAYS
         )
-        prompt = mock_cls.return_value.messages.create.call_args[1]["messages"][0]["content"]
+        prompt = _prompt_from_mock(mock_chat)
     assert "Alice" in prompt
 
 
 def test_generate_morning_digest_no_news_no_birthdays():
-    with patch("anthropic.Anthropic") as mock_cls:
-        mock_cls.return_value = _mock_claude()
+    with patch("llm.chat", return_value=_llm_result()) as mock_chat:
         digest_module.generate_morning_digest(
             SAMPLE_EVENTS, SAMPLE_SHORT, SAMPLE_LONG, None, news=None, birthdays=None
         )
-        prompt = mock_cls.return_value.messages.create.call_args[1]["messages"][0]["content"]
+        prompt = _prompt_from_mock(mock_chat)
     assert "НОВОСТИ" not in prompt
 
 
@@ -71,13 +75,12 @@ def test_generate_morning_digest_with_recent_messages():
         {"role": "user", "content": "сегодня плохо себя чувствую, голова болит"},
         {"role": "assistant", "content": "понимаю, постарайся отдохнуть"},
     ]
-    with patch("anthropic.Anthropic") as mock_cls:
-        mock_cls.return_value = _mock_claude()
+    with patch("llm.chat", return_value=_llm_result()) as mock_chat:
         digest_module.generate_morning_digest(
             SAMPLE_EVENTS, SAMPLE_SHORT, SAMPLE_LONG, None,
             recent_messages=messages,
         )
-        prompt = mock_cls.return_value.messages.create.call_args[1]["messages"][0]["content"]
+        prompt = _prompt_from_mock(mock_chat)
     assert "голова болит" in prompt
     assert "НЕДАВНИЙ РАЗГОВОР" in prompt
 
@@ -85,13 +88,12 @@ def test_generate_morning_digest_with_recent_messages():
 def test_generate_morning_digest_with_whatsapp_summary():
     """Pre-built WhatsApp summary should be inserted verbatim into the prompt."""
     summary = "🔴 ВАЖНО ОТВЕТИТЬ\n• Семья — мама спрашивает про планы на выходные"
-    with patch("anthropic.Anthropic") as mock_cls:
-        mock_cls.return_value = _mock_claude()
+    with patch("llm.chat", return_value=_llm_result()) as mock_chat:
         digest_module.generate_morning_digest(
             SAMPLE_EVENTS, SAMPLE_SHORT, SAMPLE_LONG, None,
             whatsapp_summary=summary,
         )
-        prompt = mock_cls.return_value.messages.create.call_args[1]["messages"][0]["content"]
+        prompt = _prompt_from_mock(mock_chat)
     assert "WHATSAPP" in prompt
     assert "мама спрашивает про планы" in prompt
     assert "ВАЖНО ОТВЕТИТЬ" in prompt
@@ -99,26 +101,24 @@ def test_generate_morning_digest_with_whatsapp_summary():
 
 def test_generate_morning_digest_without_whatsapp_summary():
     """Empty/None summary should not add a WhatsApp section to the prompt."""
-    with patch("anthropic.Anthropic") as mock_cls:
-        mock_cls.return_value = _mock_claude()
+    with patch("llm.chat", return_value=_llm_result()) as mock_chat:
         digest_module.generate_morning_digest(
             SAMPLE_EVENTS, SAMPLE_SHORT, SAMPLE_LONG, None,
             whatsapp_summary=None,
         )
-        prompt = mock_cls.return_value.messages.create.call_args[1]["messages"][0]["content"]
+        prompt = _prompt_from_mock(mock_chat)
     assert "WHATSAPP (готовая сводка" not in prompt
 
 
 def test_generate_morning_digest_with_session_summaries():
     """Long-term session summaries should be in the prompt."""
     sums = [{"date": "2026-05-15 21:00", "summary": "Обсуждали проект Х, переживала из-за дедлайна"}]
-    with patch("anthropic.Anthropic") as mock_cls:
-        mock_cls.return_value = _mock_claude()
+    with patch("llm.chat", return_value=_llm_result()) as mock_chat:
         digest_module.generate_morning_digest(
             SAMPLE_EVENTS, SAMPLE_SHORT, SAMPLE_LONG, None,
             summaries=sums,
         )
-        prompt = mock_cls.return_value.messages.create.call_args[1]["messages"][0]["content"]
+        prompt = _prompt_from_mock(mock_chat)
     assert "проект Х" in prompt
     assert "ДОЛГОСРОЧНАЯ ПАМЯТЬ" in prompt
 
@@ -134,12 +134,11 @@ def test_format_history_empty():
 
 
 def test_generate_morning_digest_with_weather():
-    with patch("anthropic.Anthropic") as mock_cls:
-        mock_cls.return_value = _mock_claude()
+    with patch("llm.chat", return_value=_llm_result()) as mock_chat:
         digest_module.generate_morning_digest(
             SAMPLE_EVENTS, SAMPLE_SHORT, SAMPLE_LONG, None, weather="ясно, 25°C"
         )
-        prompt = mock_cls.return_value.messages.create.call_args[1]["messages"][0]["content"]
+        prompt = _prompt_from_mock(mock_chat)
     assert "25°C" in prompt
 
 
@@ -148,16 +147,15 @@ def test_generate_weekly_digest():
         "2026-05-18": [{"title": "Standup", "time": "09:00"}],
         "2026-05-20": [{"title": "Retro", "time": "15:00"}],
     }
-    with patch("anthropic.Anthropic", return_value=_mock_claude("Weekly overview")):
+    with patch("llm.chat", return_value=_llm_result("Weekly overview")):
         result = digest_module.generate_weekly_digest(week_events, SAMPLE_SHORT, SAMPLE_LONG)
     assert result == "Weekly overview"
 
 
 def test_generate_weekly_digest_empty_week():
-    with patch("anthropic.Anthropic") as mock_cls:
-        mock_cls.return_value = _mock_claude()
+    with patch("llm.chat", return_value=_llm_result()) as mock_chat:
         digest_module.generate_weekly_digest({}, [], [])
-        prompt = mock_cls.return_value.messages.create.call_args[1]["messages"][0]["content"]
+        prompt = _prompt_from_mock(mock_chat)
     assert "Событий не запланировано" in prompt
 
 

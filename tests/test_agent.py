@@ -8,27 +8,17 @@ import agent
 import tools
 
 
-def _text_block(text: str):
-    b = MagicMock()
-    b.type = "text"
-    b.text = text
-    return b
+def _tool_use(tool_use_id: str, name: str, input_dict: dict) -> dict:
+    return {"id": tool_use_id, "name": name, "input": input_dict}
 
 
-def _tool_use_block(tool_use_id: str, name: str, input_dict: dict):
-    b = MagicMock()
-    b.type = "tool_use"
-    b.id = tool_use_id
-    b.name = name
-    b.input = input_dict
-    return b
-
-
-def _claude_response(stop_reason: str, content_blocks: list):
-    resp = MagicMock()
-    resp.stop_reason = stop_reason
-    resp.content = content_blocks
-    return resp
+def _llm_response(stop_reason: str, text: str = "", tool_uses: list | None = None) -> dict:
+    return {
+        "text": text,
+        "tool_uses": tool_uses or [],
+        "stop_reason": stop_reason,
+        "raw": {},
+    }
 
 
 # ─── Single tool, end_turn ───────────────────────────────────────────────────
@@ -36,13 +26,11 @@ def _claude_response(stop_reason: str, content_blocks: list):
 def test_single_tool_call_then_end_turn():
     """User asks for weather → tool_use → tool_result → end_turn with text."""
     fake_weather = MagicMock(return_value={"status": "ok", "summary": "🌤 Нешер: ясно, 20°C"})
-    with patch("anthropic.Anthropic") as mock_anthropic, \
+    with patch("llm.chat") as mock_chat, \
          patch.dict(tools.TOOL_FUNCS, {"get_weather": fake_weather}):
-        mock_client = MagicMock()
-        mock_anthropic.return_value = mock_client
-        mock_client.messages.create.side_effect = [
-            _claude_response("tool_use", [_tool_use_block("u1", "get_weather", {})]),
-            _claude_response("end_turn", [_text_block("Хорошая погода сегодня!")]),
+        mock_chat.side_effect = [
+            _llm_response("tool_use", tool_uses=[_tool_use("u1", "get_weather", {})]),
+            _llm_response("end_turn", text="Хорошая погода сегодня!"),
         ]
         result = agent.run_agent("какая погода?")
 
@@ -57,14 +45,12 @@ def test_chained_tools():
     """Sequential tool calls: find_free_time → add_task → end_turn."""
     fake_find = MagicMock(return_value={"status": "ok", "summary": "🕐 Свободно 10:00–12:00"})
     fake_add = MagicMock(return_value={"status": "ok", "summary": "⚡ Добавил: йога"})
-    with patch("anthropic.Anthropic") as mock_anthropic, \
+    with patch("llm.chat") as mock_chat, \
          patch.dict(tools.TOOL_FUNCS, {"find_free_time": fake_find, "add_task": fake_add}):
-        mock_client = MagicMock()
-        mock_anthropic.return_value = mock_client
-        mock_client.messages.create.side_effect = [
-            _claude_response("tool_use", [_tool_use_block("u1", "find_free_time", {"duration_minutes": 60})]),
-            _claude_response("tool_use", [_tool_use_block("u2", "add_task", {"title": "йога", "time": "10:00"})]),
-            _claude_response("end_turn", [_text_block("Готово!")]),
+        mock_chat.side_effect = [
+            _llm_response("tool_use", tool_uses=[_tool_use("u1", "find_free_time", {"duration_minutes": 60})]),
+            _llm_response("tool_use", tool_uses=[_tool_use("u2", "add_task", {"title": "йога", "time": "10:00"})]),
+            _llm_response("end_turn", text="Готово!"),
         ]
         result = agent.run_agent("найди час и запиши туда йогу")
 
@@ -75,19 +61,17 @@ def test_chained_tools():
 # ─── Parallel tool calls in one block ────────────────────────────────────────
 
 def test_parallel_tools_one_response():
-    """Claude returns multiple tool_use blocks in a single response."""
+    """Model returns multiple tool_use blocks in a single response."""
     fake_w = MagicMock(return_value={"status": "ok", "summary": "🌤 ясно"})
     fake_t = MagicMock(return_value={"status": "ok", "summary": "📋 1 задача"})
-    with patch("anthropic.Anthropic") as mock_anthropic, \
+    with patch("llm.chat") as mock_chat, \
          patch.dict(tools.TOOL_FUNCS, {"get_weather": fake_w, "show_tasks": fake_t}):
-        mock_client = MagicMock()
-        mock_anthropic.return_value = mock_client
-        mock_client.messages.create.side_effect = [
-            _claude_response("tool_use", [
-                _tool_use_block("u1", "get_weather", {}),
-                _tool_use_block("u2", "show_tasks", {}),
+        mock_chat.side_effect = [
+            _llm_response("tool_use", tool_uses=[
+                _tool_use("u1", "get_weather", {}),
+                _tool_use("u2", "show_tasks", {}),
             ]),
-            _claude_response("end_turn", [_text_block("Вот сводка.")]),
+            _llm_response("end_turn", text="Вот сводка."),
         ]
         result = agent.run_agent("погода и задачи")
 
@@ -104,12 +88,10 @@ def test_needs_confirmation_stops_loop():
         "summary": "✉️ Готово к отправке. Отправить?",
         "data": {"kind": "email_preview"},
     }
-    with patch("anthropic.Anthropic") as mock_anthropic, \
+    with patch("llm.chat") as mock_chat, \
          patch.dict(tools.TOOL_FUNCS, {"send_email": MagicMock(return_value=confirm_result)}):
-        mock_client = MagicMock()
-        mock_anthropic.return_value = mock_client
-        mock_client.messages.create.side_effect = [
-            _claude_response("tool_use", [_tool_use_block("u1", "send_email",
+        mock_chat.side_effect = [
+            _llm_response("tool_use", tool_uses=[_tool_use("u1", "send_email",
                 {"to_email": "a@b.com", "subject": "Hi", "body": "Hello"})]),
         ]
         result = agent.run_agent("напиши письмо")
@@ -122,12 +104,10 @@ def test_needs_confirmation_stops_loop():
 
 def test_get_digest_emits_action():
     """get_digest tool result includes action=send_digest signal."""
-    with patch("anthropic.Anthropic") as mock_anthropic:
-        mock_client = MagicMock()
-        mock_anthropic.return_value = mock_client
-        mock_client.messages.create.side_effect = [
-            _claude_response("tool_use", [_tool_use_block("u1", "get_digest", {})]),
-            _claude_response("end_turn", []),
+    with patch("llm.chat") as mock_chat:
+        mock_chat.side_effect = [
+            _llm_response("tool_use", tool_uses=[_tool_use("u1", "get_digest", {})]),
+            _llm_response("end_turn"),
         ]
         result = agent.run_agent("дай дайджест")
 
@@ -137,29 +117,25 @@ def test_get_digest_emits_action():
 # ─── Safety cap ──────────────────────────────────────────────────────────────
 
 def test_max_iterations_cap():
-    """If Claude never returns end_turn, loop stops at MAX_ITERATIONS."""
+    """If model never returns end_turn, loop stops at MAX_ITERATIONS."""
     fake = MagicMock(return_value={"status": "ok", "summary": "🌤"})
-    with patch("anthropic.Anthropic") as mock_anthropic, \
+    with patch("llm.chat") as mock_chat, \
          patch.dict(tools.TOOL_FUNCS, {"get_weather": fake}):
-        mock_client = MagicMock()
-        mock_anthropic.return_value = mock_client
-        mock_client.messages.create.return_value = _claude_response(
-            "tool_use", [_tool_use_block("u1", "get_weather", {})]
+        mock_chat.return_value = _llm_response(
+            "tool_use", tool_uses=[_tool_use("u1", "get_weather", {})]
         )
         result = agent.run_agent("loop forever")
 
-    assert mock_client.messages.create.call_count == agent.MAX_ITERATIONS
+    assert mock_chat.call_count == agent.MAX_ITERATIONS
 
 
 # ─── Unknown tool handled ────────────────────────────────────────────────────
 
 def test_unknown_tool_recorded_as_error():
-    with patch("anthropic.Anthropic") as mock_anthropic:
-        mock_client = MagicMock()
-        mock_anthropic.return_value = mock_client
-        mock_client.messages.create.side_effect = [
-            _claude_response("tool_use", [_tool_use_block("u1", "does_not_exist", {})]),
-            _claude_response("end_turn", [_text_block("Не нашёл инструмент.")]),
+    with patch("llm.chat") as mock_chat:
+        mock_chat.side_effect = [
+            _llm_response("tool_use", tool_uses=[_tool_use("u1", "does_not_exist", {})]),
+            _llm_response("end_turn", text="Не нашёл инструмент."),
         ]
         result = agent.run_agent("???")
 
@@ -170,10 +146,8 @@ def test_unknown_tool_recorded_as_error():
 # ─── API error handled gracefully ────────────────────────────────────────────
 
 def test_api_failure_returns_fallback():
-    with patch("anthropic.Anthropic") as mock_anthropic:
-        mock_client = MagicMock()
-        mock_anthropic.return_value = mock_client
-        mock_client.messages.create.side_effect = Exception("network error")
+    with patch("llm.chat") as mock_chat:
+        mock_chat.side_effect = Exception("network error")
         result = agent.run_agent("hi")
 
     assert "не получилось" in result["text"].lower() or "попробуй" in result["text"].lower()
