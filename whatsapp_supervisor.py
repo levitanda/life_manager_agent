@@ -72,11 +72,27 @@ def _log_file(user_id: int) -> Path:
     return Path(db.data_dir(), "users", str(user_id), "wa_bridge.log")
 
 
+def _port_is_listening(port: int) -> bool:
+    """Quick check whether anything is already bound on 127.0.0.1:port."""
+    import socket as _socket
+    s = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+    s.settimeout(0.1)
+    try:
+        return s.connect_ex(("127.0.0.1", port)) == 0
+    finally:
+        s.close()
+
+
 def _allocate_port(used_ports: set[int]) -> int:
     start, end = _port_range_start(), _port_range_end()
     for p in range(start, end + 1):
-        if p not in used_ports:
-            return p
+        if p in used_ports:
+            continue
+        if _port_is_listening(p):
+            # Some other process owns this port even though our DB doesn't
+            # know about it — skip so we don't EADDRINUSE.
+            continue
+        return p
     raise RuntimeError(f"No free WhatsApp bridge port in {start}-{end}")
 
 
