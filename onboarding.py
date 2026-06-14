@@ -210,7 +210,7 @@ async def cb_onboard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await cmd_subscribe(update, context)
     elif action == "promo":
         await query.message.reply_text(
-            "Введи команду: `/promo КОД` (например, `/promo LEVITANONLY`).",
+            "Введи команду: `/promo КОД` (твой код).",
             parse_mode=ParseMode.MARKDOWN,
         )
     elif action == "features":
