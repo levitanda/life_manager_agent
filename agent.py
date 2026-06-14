@@ -92,10 +92,15 @@ def run_agent(
     summaries: Optional[list] = None,
     active_tasks: Optional[list] = None,
     context=None,
+    user_id: Optional[int] = None,
 ) -> dict:
     """Execute the tool-use loop. Returns:
       {"text": str — aggregated reply,
        "actions": list — side-effect signals (send_digest, needs_confirmation, ...)}
+
+    `user_id` is threaded into every tool call so per-user clients hit the
+    right Google account / WhatsApp bridge / data dir. None preserves legacy
+    single-user behavior.
     """
     persona = _load_personality()
     system = _build_system_prompt(persona, active_tasks or [], summaries or [])
@@ -153,6 +158,7 @@ def run_agent(
                     **block.input,
                     _context=context,
                     _active_tasks=active_tasks or [],
+                    _user_id=user_id,
                 )
             except Exception as e:
                 logger.exception("tool %s crashed", block.name)

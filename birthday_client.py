@@ -2,6 +2,7 @@
 
 import datetime
 import logging
+from typing import Optional
 
 from googleapiclient.discovery import build
 
@@ -10,11 +11,15 @@ import google_auth
 logger = logging.getLogger(__name__)
 
 
-def get_todays_birthdays() -> list[dict]:
+def _get_service(user_id: Optional[int] = None):
+    return build("people", "v1", credentials=google_auth.get_credentials(user_id))
+
+
+def get_todays_birthdays(*, user_id: Optional[int] = None) -> list[dict]:
     """Return contacts with a birthday matching today's month and day."""
     today = datetime.date.today()
     try:
-        svc = build("people", "v1", credentials=google_auth.get_credentials())
+        svc = _get_service(user_id)
         next_page_token = None
         birthdays = []
         while True:

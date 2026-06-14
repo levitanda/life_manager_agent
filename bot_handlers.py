@@ -45,10 +45,22 @@ def _is_owner(update: Update) -> bool:
     return update.effective_user.id == config.TELEGRAM_CHAT_ID
 
 
+def _resolve_user_id(update: Update) -> int | None:
+    """Map Telegram user to internal user_id from DB. None if not yet migrated."""
+    try:
+        import db
+        with db.session_scope() as s:
+            user = db.get_user_by_telegram_id(s, update.effective_user.id)
+            return user.id if user else None
+    except Exception:
+        return None
+
+
 async def cmd_memory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_owner(update):
         return
-    summaries = conversation.get_recent_summaries(10)
+    user_id = _resolve_user_id(update)
+    summaries = conversation.get_recent_summaries(10, user_id=user_id)
     if not summaries:
         await update.message.reply_text("Пока нет сохранённых резюме сессий.")
         return
@@ -76,6 +88,7 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_owner(update):
         return
 
+    user_id = _resolve_user_id(update)
     args = context.args
     if not args or len(args) < 2:
         await update.message.reply_text(
@@ -124,6 +137,7 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             title, task_type,
             due_date=due_date, end_date=end_date,
             start_dt=start_dt, duration_minutes=duration_minutes,
+            user_id=user_id,
         )
 
         emoji = "⚡" if task_type == "short" else "🎯"
@@ -155,8 +169,9 @@ async def cmd_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_owner(update):
         return
 
-    short = calendar_client.get_active_tasks("short")
-    long_ = calendar_client.get_active_tasks("long")
+    user_id = _resolve_user_id(update)
+    short = calendar_client.get_active_tasks("short", user_id=user_id)
+    long_ = calendar_client.get_active_tasks("long", user_id=user_id)
 
     lines = ["📋 *Активные задачи*\n"]
 
@@ -189,6 +204,8 @@ async def cmd_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_owner(update):
         return
 
+    user_id = _resolve_user_id(update)
+
     if not context.args:
         await update.message.reply_text("Использование: /done <номер задачи>")
         return
@@ -199,8 +216,8 @@ async def cmd_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("Укажи номер задачи числом.")
         return
 
-    short = calendar_client.get_active_tasks("short")
-    long_ = calendar_client.get_active_tasks("long")
+    short = calendar_client.get_active_tasks("short", user_id=user_id)
+    long_ = calendar_client.get_active_tasks("long", user_id=user_id)
     all_tasks = short + long_
 
     if num < 1 or num > len(all_tasks):
@@ -208,7 +225,7 @@ async def cmd_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     task = all_tasks[num - 1]
-    calendar_client.complete_task(task["id"], task["cal_id"])
+    calendar_client.complete_task(task["id"], task["cal_id"], user_id=user_id)
     await update.message.reply_text(f"✅ Выполнено: {task['title']}")
 
 
@@ -231,8 +248,9 @@ async def cmd_progress_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def cmd_progress_receive(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not _is_owner(update):
         return ConversationHandler.END
+    user_id = _resolve_user_id(update)
     text = update.message.text
-    calendar_client.save_progress(text)
+    calendar_client.save_progress(text, user_id=user_id)
     await update.message.reply_text("✍️ Прогресс сохранён. Учту завтра утром!")
     return ConversationHandler.END
 
@@ -249,6 +267,8 @@ async def handle_natural(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def _process_natural(text: str, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = _resolve_user_id(update)
+
     # Handle "waiting for email address" state
     if context.user_data.get("waiting_for") == "email":
         context.user_data["pending_email"]["to_email"] = text.strip()
@@ -256,20 +276,27 @@ async def _process_natural(text: str, update: Update, context: ContextTypes.DEFA
         await _show_email_preview(update, context)
         return
 
-    short = calendar_client.get_active_tasks("short")
-    long_ = calendar_client.get_active_tasks("long")
+    short = calendar_client.get_active_tasks("short", user_id=user_id)
+    long_ = calendar_client.get_active_tasks("long", user_id=user_id)
     all_tasks = short + long_
 
-    history = conversation.get_history()
-    summaries = conversation.get_recent_summaries()
+    history = conversation.get_history(user_id=user_id)
+    summaries = conversation.get_recent_summaries(user_id=user_id)
 
     # New agent path (feature-flagged via USE_AGENT env var)
     if agent.is_enabled():
         try:
-            result = agent.run_agent(text, history, summaries, all_tasks, context)
-            await _handle_agent_result(result, update, context)
+            result = agent.run_agent(
+                text,
+                history=history,
+                summaries=summaries,
+                active_tasks=all_tasks,
+                context=context,
+                user_id=user_id,
+            )
+            await _handle_agent_result(result, update, context, user_id=user_id)
             if result.get("text"):
-                conversation.add(text, result["text"])
+                conversation.add(text, result["text"], user_id=user_id)
             return
         except Exception as e:
             logger.exception("agent failed, falling back to legacy parser: %s", e)
@@ -282,15 +309,21 @@ async def _process_natural(text: str, update: Update, context: ContextTypes.DEFA
 
     response_parts = []
     for action in actions:
-        resp = await _execute_action(action, all_tasks, text, update, context)
+        resp = await _execute_action(action, all_tasks, text, update, context, user_id=user_id)
         if resp:
             response_parts.append(resp)
 
     if response_parts:
-        conversation.add(text, "\n\n".join(response_parts))
+        conversation.add(text, "\n\n".join(response_parts), user_id=user_id)
 
 
-async def _handle_agent_result(result: dict, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def _handle_agent_result(
+    result: dict,
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    user_id: int | None = None,
+) -> None:
     """Render agent.run_agent output: send text, then execute any side-effect actions."""
     text_out = result.get("text", "").strip()
     actions = result.get("actions", []) or []
@@ -327,9 +360,9 @@ async def _handle_agent_result(result: dict, update: Update, context: ContextTyp
             monday = today - datetime.timedelta(days=today.weekday())
             sunday = monday + datetime.timedelta(days=6)
             try:
-                week_events = calendar_client.get_week_events(monday, sunday)
-                short_ = calendar_client.get_active_tasks("short")
-                long__ = calendar_client.get_active_tasks("long")
+                week_events = calendar_client.get_week_events(monday, sunday, user_id=user_id)
+                short_ = calendar_client.get_active_tasks("short", user_id=user_id)
+                long__ = calendar_client.get_active_tasks("long", user_id=user_id)
                 weekly_text = digest_module.generate_weekly_digest(week_events, short_, long__)
             except Exception as e:
                 logger.error("weekly digest action failed: %s", e)
@@ -343,6 +376,8 @@ async def _execute_action(
     original_text: str,
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
+    *,
+    user_id: int | None = None,
 ) -> str | None:
     intent = action.get("intent")
 
@@ -372,14 +407,14 @@ async def _execute_action(
         attendee_names = action.get("attendees") or []
         attendee_emails, not_found = [], []
         for name in attendee_names:
-            email = contacts_client.find_contact_email(name)
+            email = contacts_client.find_contact_email(name, user_id=user_id)
             (attendee_emails if email else not_found).append(email or name)
 
         # Conflict detection for timed events
         if start_dt:
             end_dt = start_dt + datetime.timedelta(minutes=duration_minutes)
             try:
-                conflicts = calendar_client.get_conflicts(start_dt, end_dt)
+                conflicts = calendar_client.get_conflicts(start_dt, end_dt, user_id=user_id)
             except Exception:
                 conflicts = []
             if conflicts:
@@ -404,7 +439,8 @@ async def _execute_action(
         try:
             calendar_client.add_task(title, task_type, due_date=due_date, end_date=end_date,
                                      start_dt=start_dt, duration_minutes=duration_minutes,
-                                     attendees=attendee_emails or None)
+                                     attendees=attendee_emails or None,
+                                     user_id=user_id)
             emoji = "⚡" if task_type == "short" else "🎯"
             if start_dt:
                 dur_str = f"{duration_minutes} мин." if duration_minutes != 60 else "1 час"
@@ -437,10 +473,10 @@ async def _execute_action(
         if task_number and 1 <= task_number <= len(all_tasks):
             task = all_tasks[task_number - 1]
             if intent == "delete_task":
-                calendar_client.delete_task(task["id"], task["cal_id"])
+                calendar_client.delete_task(task["id"], task["cal_id"], user_id=user_id)
                 response_text = f"🗑 Удалено: {task['title']}"
             else:
-                calendar_client.complete_task(task["id"], task["cal_id"])
+                calendar_client.complete_task(task["id"], task["cal_id"], user_id=user_id)
                 response_text = f"✅ Выполнено: {task['title']}"
         else:
             response_text = "Не нашёл такую задачу. Напиши /tasks чтобы увидеть список с номерами."
@@ -480,7 +516,7 @@ async def _execute_action(
         return "[дайджест отправлен]"
 
     elif intent == "save_progress":
-        calendar_client.save_progress(original_text)
+        calendar_client.save_progress(original_text, user_id=user_id)
         response_text = "✍️ Прогресс сохранён. Учту завтра утром!"
         await update.message.reply_text(response_text)
         return response_text
@@ -516,7 +552,7 @@ async def _execute_action(
         new_end = new_start + datetime.timedelta(minutes=duration_minutes)
 
         try:
-            calendar_client.reschedule_task(task["id"], task["cal_id"], new_start, new_end)
+            calendar_client.reschedule_task(task["id"], task["cal_id"], new_start, new_end, user_id=user_id)
             response_text = f"📅 Перенесено: «{task['title']}» → {new_start.strftime('%d.%m.%Y в %H:%M')}"
         except Exception as e:
             logger.error("reschedule_task failed: %s", e)
@@ -530,7 +566,7 @@ async def _execute_action(
         tz = pytz.timezone(config.TIMEZONE)
         target_date = datetime.date.fromisoformat(date_str) if date_str else datetime.datetime.now(tz).date()
         try:
-            slots = calendar_client.find_free_slots(target_date, duration_minutes)
+            slots = calendar_client.find_free_slots(target_date, duration_minutes, user_id=user_id)
             if slots:
                 slot_lines = "\n".join(f"• {s['start']}–{s['end']}" for s in slots)
                 response_text = f"🕐 Свободное время {target_date.strftime('%d.%m')}:\n{slot_lines}"
@@ -550,9 +586,9 @@ async def _execute_action(
         sunday = monday + datetime.timedelta(days=6)
         await update.message.reply_text("⏳ Составляю недельный обзор...")
         try:
-            week_events = calendar_client.get_week_events(monday, sunday)
-            short = calendar_client.get_active_tasks("short")
-            long_ = calendar_client.get_active_tasks("long")
+            week_events = calendar_client.get_week_events(monday, sunday, user_id=user_id)
+            short = calendar_client.get_active_tasks("short", user_id=user_id)
+            long_ = calendar_client.get_active_tasks("long", user_id=user_id)
             text = digest_module.generate_weekly_digest(week_events, short, long_)
         except Exception as e:
             logger.error("weekly digest failed: %s", e)
@@ -602,6 +638,7 @@ async def _show_email_preview(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def callback_email(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
+    user_id = _resolve_user_id(update)
     data = context.user_data.pop("pending_email", {})
 
     if query.data == "email_confirm":
@@ -609,7 +646,7 @@ async def callback_email(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await query.edit_message_text("Адрес не указан, письмо не отправлено.")
             return
         try:
-            gmail_client.send_email(data["to_email"], data["subject"], data["body"])
+            gmail_client.send_email(data["to_email"], data["subject"], data["body"], user_id=user_id)
             await query.edit_message_text(f"✉️ Письмо отправлено на {data['to_email']}")
         except Exception as e:
             logger.error("send_email failed: %s", e)
@@ -621,6 +658,7 @@ async def callback_email(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 async def callback_conflict(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
+    user_id = _resolve_user_id(update)
     data = context.user_data.pop("pending_task", {})
 
     if query.data == "conflict_confirm" and data:
@@ -630,6 +668,7 @@ async def callback_conflict(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                 due_date=data.get("due_date"), end_date=data.get("end_date"),
                 start_dt=data.get("start_dt"), duration_minutes=data.get("duration_minutes", 60),
                 attendees=data.get("attendee_emails") or None,
+                user_id=user_id,
             )
             start_dt = data.get("start_dt")
             time_label = start_dt.strftime("%d.%m.%Y в %H:%M") if start_dt else ""
@@ -681,23 +720,24 @@ async def _reply_split(update: Update, text: str) -> None:
 
 
 async def _send_morning_digest(app: Application, target_date: datetime.date | None = None) -> None:
+    # Phase 1: scheduler-triggered, Daria-only (user_id=None preserves legacy paths).
     last_error = None
     for attempt in range(3):
         try:
-            events = calendar_client.get_todays_calendar_events(target_date)
-            short = calendar_client.get_active_tasks("short", target_date)
-            long_ = calendar_client.get_active_tasks("long", target_date)
-            yesterday = calendar_client.get_progress_before_date(target_date)
-            emails = gmail_client.get_unread_emails() if target_date is None else []
+            events = calendar_client.get_todays_calendar_events(target_date, user_id=None)
+            short = calendar_client.get_active_tasks("short", target_date, user_id=None)
+            long_ = calendar_client.get_active_tasks("long", target_date, user_id=None)
+            yesterday = calendar_client.get_progress_before_date(target_date, user_id=None)
+            emails = gmail_client.get_unread_emails(user_id=None) if target_date is None else []
             weather = weather_client.get_weather(target_date)
             tz = pytz.timezone(config.TIMEZONE)
             today = datetime.datetime.now(tz).date()
             is_today = target_date is None or target_date == today
             news = news_client.get_news_headlines(max_per_source=5) if is_today else []
-            birthdays = birthday_client.get_todays_birthdays() if is_today else []
-            recent_msgs = conversation.get_history()
-            summaries = conversation.get_recent_summaries()
-            wa_unread = whatsapp_client.unread_chats() if is_today else []
+            birthdays = birthday_client.get_todays_birthdays(user_id=None) if is_today else []
+            recent_msgs = conversation.get_history(user_id=None)
+            summaries = conversation.get_recent_summaries(user_id=None)
+            wa_unread = whatsapp_client.unread_chats(user_id=None) if is_today else []
             wa_summary = whatsapp_summary.summarize_unread_chats(wa_unread) if wa_unread else ""
 
             text = digest_module.generate_morning_digest(
@@ -716,7 +756,7 @@ async def _send_morning_digest(app: Application, target_date: datetime.date | No
             pushover_client.send_push(text[:1024], title="☀️ Доброе утро!")
             # Add digest to conversation history so today's chat continues from it
             if is_today:
-                conversation.add("(утренний дайджест)", text)
+                conversation.add("(утренний дайджест)", text, user_id=None)
             return
         except Exception as e:
             last_error = e

@@ -64,22 +64,24 @@ def add_task(
     duration_minutes: int = 60,
     attendees: Optional[list] = None,
     _context=None,
+    _user_id: Optional[int] = None,
     **_kwargs,
 ) -> dict:
+    user_id = _user_id
     start_dt = _resolve_start_dt(date, time)
     due_date = datetime.date.fromisoformat(date) if (date and not time) else None
     end_date_p = datetime.date.fromisoformat(end_date) if end_date else None
 
     attendee_emails, not_found = [], []
     for name in attendees or []:
-        email = contacts_client.find_contact_email(name)
+        email = contacts_client.find_contact_email(name, user_id=user_id)
         (attendee_emails if email else not_found).append(email or name)
 
     # Conflict detection for timed events
     if start_dt:
         end_dt = start_dt + datetime.timedelta(minutes=duration_minutes)
         try:
-            conflicts = calendar_client.get_conflicts(start_dt, end_dt)
+            conflicts = calendar_client.get_conflicts(start_dt, end_dt, user_id=user_id)
         except Exception:
             conflicts = []
         if conflicts:
@@ -102,6 +104,7 @@ def add_task(
             title, task_type, due_date=due_date, end_date=end_date_p,
             start_dt=start_dt, duration_minutes=duration_minutes,
             attendees=attendee_emails or None,
+            user_id=user_id,
         )
     except Exception as e:
         logger.error("add_task failed: %s", e)
@@ -138,24 +141,26 @@ def _resolve_task_by_number(task_number, all_tasks):
     return all_tasks[n - 1]
 
 
-def complete_task(*, task_number: int, _active_tasks=None, **_kwargs) -> dict:
+def complete_task(*, task_number: int, _active_tasks=None, _user_id: Optional[int] = None, **_kwargs) -> dict:
+    user_id = _user_id
     task = _resolve_task_by_number(task_number, _active_tasks or [])
     if not task:
         return _err("Не нашёл такую задачу. Напиши /tasks чтобы увидеть список.")
     try:
-        calendar_client.complete_task(task["id"], task["cal_id"])
+        calendar_client.complete_task(task["id"], task["cal_id"], user_id=user_id)
         return _ok(f"✅ Выполнено: {task['title']}")
     except Exception as e:
         logger.error("complete_task failed: %s", e)
         return _err(f"Не получилось отметить выполненной: {e}")
 
 
-def delete_task(*, task_number: int, _active_tasks=None, **_kwargs) -> dict:
+def delete_task(*, task_number: int, _active_tasks=None, _user_id: Optional[int] = None, **_kwargs) -> dict:
+    user_id = _user_id
     task = _resolve_task_by_number(task_number, _active_tasks or [])
     if not task:
         return _err("Не нашёл такую задачу. Напиши /tasks чтобы увидеть список.")
     try:
-        calendar_client.delete_task(task["id"], task["cal_id"])
+        calendar_client.delete_task(task["id"], task["cal_id"], user_id=user_id)
         return _ok(f"🗑 Удалено: {task['title']}")
     except Exception as e:
         logger.error("delete_task failed: %s", e)
@@ -172,11 +177,13 @@ def reschedule_task(
     time: Optional[str] = None,
     duration_minutes: int = 60,
     _active_tasks=None,
+    _user_id: Optional[int] = None,
     **_kwargs,
 ) -> dict:
     """Reschedule a task (by task_number from the active list) OR any calendar
     event (by event_title — fuzzy substring match across primary + task calendars).
     """
+    user_id = _user_id
     if not time:
         return _err("Укажи новое время (например, «перенеси встречу с Леонелем на пятницу в 17:00»).")
 
@@ -187,7 +194,7 @@ def reschedule_task(
             target = {"id": task["id"], "cal_id": task["cal_id"], "title": task["title"]}
 
     if target is None and event_title:
-        matches = calendar_client.find_event_by_title(event_title)
+        matches = calendar_client.find_event_by_title(event_title, user_id=user_id)
         if not matches:
             return _err(f"В календаре не нашлось события с «{event_title}». Уточни название.")
         if len(matches) > 1:
@@ -205,7 +212,7 @@ def reschedule_task(
     new_start = _resolve_start_dt(date, time)
     new_end = new_start + datetime.timedelta(minutes=duration_minutes)
     try:
-        calendar_client.reschedule_task(target["id"], target["cal_id"], new_start, new_end)
+        calendar_client.reschedule_task(target["id"], target["cal_id"], new_start, new_end, user_id=user_id)
         return _ok(f"📅 Перенесено: «{target['title']}» → {new_start.strftime('%d.%m.%Y в %H:%M')}")
     except Exception as e:
         logger.error("reschedule_task failed: %s", e)
@@ -214,7 +221,7 @@ def reschedule_task(
 
 # ─── get_weather ─────────────────────────────────────────────────────────────
 
-def get_weather(*, city: Optional[str] = None, date: Optional[str] = None, **_kwargs) -> dict:
+def get_weather(*, city: Optional[str] = None, date: Optional[str] = None, _user_id: Optional[int] = None, **_kwargs) -> dict:
     target_date = datetime.date.fromisoformat(date) if date else None
     result = weather_client.get_weather(target_date, city)
     return _ok(f"🌤 {result}") if result else _err("Не удалось получить погоду.")
@@ -222,11 +229,12 @@ def get_weather(*, city: Optional[str] = None, date: Optional[str] = None, **_kw
 
 # ─── find_free_time ──────────────────────────────────────────────────────────
 
-def find_free_time(*, date: Optional[str] = None, duration_minutes: int = 60, **_kwargs) -> dict:
+def find_free_time(*, date: Optional[str] = None, duration_minutes: int = 60, _user_id: Optional[int] = None, **_kwargs) -> dict:
+    user_id = _user_id
     tz = pytz.timezone(config.TIMEZONE)
     target_date = datetime.date.fromisoformat(date) if date else datetime.datetime.now(tz).date()
     try:
-        slots = calendar_client.find_free_slots(target_date, duration_minutes)
+        slots = calendar_client.find_free_slots(target_date, duration_minutes, user_id=user_id)
     except Exception as e:
         logger.error("find_free_time failed: %s", e)
         return _err("Не удалось проверить расписание.")
@@ -238,7 +246,7 @@ def find_free_time(*, date: Optional[str] = None, duration_minutes: int = 60, **
 
 # ─── show_tasks ──────────────────────────────────────────────────────────────
 
-def show_tasks(*, _active_tasks=None, **_kwargs) -> dict:
+def show_tasks(*, _active_tasks=None, _user_id: Optional[int] = None, **_kwargs) -> dict:
     if not _active_tasks:
         return _ok("📋 Активных задач нет.")
     lines = ["📋 *Активные задачи*\n"]
@@ -264,7 +272,7 @@ def show_tasks(*, _active_tasks=None, **_kwargs) -> dict:
 
 # ─── send_to_alice ───────────────────────────────────────────────────────────
 
-def send_to_alice(*, message: str, **_kwargs) -> dict:
+def send_to_alice(*, message: str, _user_id: Optional[int] = None, **_kwargs) -> dict:
     if not message:
         return _err("Не понял, что передать Алисе.")
     with open(config.ALICE_MESSAGE_FILE, "w", encoding="utf-8") as f:
@@ -274,9 +282,10 @@ def send_to_alice(*, message: str, **_kwargs) -> dict:
 
 # ─── save_progress ───────────────────────────────────────────────────────────
 
-def save_progress(*, text: str, **_kwargs) -> dict:
+def save_progress(*, text: str, _user_id: Optional[int] = None, **_kwargs) -> dict:
+    user_id = _user_id
     try:
-        calendar_client.save_progress(text)
+        calendar_client.save_progress(text, user_id=user_id)
         return _ok("✍️ Прогресс сохранён. Учту завтра утром!")
     except Exception as e:
         logger.error("save_progress failed: %s", e)
@@ -292,6 +301,7 @@ def send_email(
     subject: str = "Без темы",
     body: str = "",
     _context=None,
+    _user_id: Optional[int] = None,
     **_kwargs,
 ) -> dict:
     if _context is not None:
@@ -312,7 +322,7 @@ def send_email(
 
 # ─── get_digest / get_weekly_digest (delegate-to-background flow) ────────────
 
-def get_digest(*, date: Optional[str] = None, **_kwargs) -> dict:
+def get_digest(*, date: Optional[str] = None, _user_id: Optional[int] = None, **_kwargs) -> dict:
     """Signals bot_handlers to run _send_morning_digest; the digest itself
     arrives as a separate message stream."""
     label = date or "сегодня"
@@ -323,13 +333,13 @@ def get_digest(*, date: Optional[str] = None, **_kwargs) -> dict:
     )
 
 
-def get_weekly_digest(**_kwargs) -> dict:
+def get_weekly_digest(*, _user_id: Optional[int] = None, **_kwargs) -> dict:
     return _ok("⏳ Составляю недельный обзор...", action="send_weekly_digest")
 
 
 # ─── Smart Home (Tuya + VeSync) ──────────────────────────────────────────────
 
-def smart_home_list(**_kwargs) -> dict:
+def smart_home_list(*, _user_id: Optional[int] = None, **_kwargs) -> dict:
     devices = smart_home.list_all_devices()
     if not devices:
         return _ok("🏠 Устройств не найдено. Проверь подключение Tuya / VeSync.")
@@ -341,59 +351,61 @@ def smart_home_list(**_kwargs) -> dict:
     return _ok("\n".join(lines))
 
 
-def smart_home_turn_on(*, device_name: str, **_kwargs) -> dict:
+def smart_home_turn_on(*, device_name: str, _user_id: Optional[int] = None, **_kwargs) -> dict:
     ok, msg = smart_home.turn_on(device_name)
     icon = "💡" if ok else "⚠️"
     return _ok(f"{icon} {msg}") if ok else _err(msg)
 
 
-def smart_home_turn_off(*, device_name: str, **_kwargs) -> dict:
+def smart_home_turn_off(*, device_name: str, _user_id: Optional[int] = None, **_kwargs) -> dict:
     ok, msg = smart_home.turn_off(device_name)
     icon = "🌑" if ok else "⚠️"
     return _ok(f"{icon} {msg}") if ok else _err(msg)
 
 
-def smart_home_set_brightness(*, device_name: str, percent: int, **_kwargs) -> dict:
+def smart_home_set_brightness(*, device_name: str, percent: int, _user_id: Optional[int] = None, **_kwargs) -> dict:
     ok, msg = smart_home.set_brightness(device_name, percent)
     return _ok(f"💡 {msg}") if ok else _err(msg)
 
 
-def smart_home_set_color_temp(*, device_name: str, percent: int, **_kwargs) -> dict:
+def smart_home_set_color_temp(*, device_name: str, percent: int, _user_id: Optional[int] = None, **_kwargs) -> dict:
     ok, msg = smart_home.set_color_temp(device_name, percent)
     return _ok(f"🌡 {msg}") if ok else _err(msg)
 
 
-def smart_home_set_fan_speed(*, device_name: str, speed: int, **_kwargs) -> dict:
+def smart_home_set_fan_speed(*, device_name: str, speed: int, _user_id: Optional[int] = None, **_kwargs) -> dict:
     ok, msg = smart_home.set_fan_speed(device_name, speed)
     return _ok(f"💨 {msg}") if ok else _err(msg)
 
 
-def smart_home_set_mode(*, device_name: str, mode: str, **_kwargs) -> dict:
+def smart_home_set_mode(*, device_name: str, mode: str, _user_id: Optional[int] = None, **_kwargs) -> dict:
     ok, msg = smart_home.set_mode(device_name, mode)
     return _ok(f"⚙️ {msg}") if ok else _err(msg)
 
 
 # ─── WhatsApp (via Baileys bridge) ───────────────────────────────────────────
 
-def whatsapp_send_group(*, group_name: str, message: str, **_kwargs) -> dict:
+def whatsapp_send_group(*, group_name: str, message: str, _user_id: Optional[int] = None, **_kwargs) -> dict:
     """Send a message to a WhatsApp chat (group OR personal contact) by friendly name.
 
     The friendly name comes from whatsapp_groups.json, which may include
     aliases and a configured signature (appended automatically).
     """
-    ok, msg = whatsapp_client.send_to_name(group_name, message)
+    user_id = _user_id
+    ok, msg = whatsapp_client.send_to_name(group_name, message, user_id=user_id)
     if ok:
         return _ok(f"💬 Отправлено в WhatsApp: «{group_name}»")
     return _err(f"WhatsApp: {msg}")
 
 
-def whatsapp_list_groups(**_kwargs) -> dict:
+def whatsapp_list_groups(*, _user_id: Optional[int] = None, **_kwargs) -> dict:
     """List all WhatsApp groups visible to the bridge."""
-    st = whatsapp_client.status()
+    user_id = _user_id
+    st = whatsapp_client.status(user_id=user_id)
     if not st.get("ready"):
         err = st.get("error") or "не авторизован"
         return _err(f"WhatsApp bridge не готов: {err}. Проверь сервис и QR.")
-    groups = whatsapp_client.list_groups()
+    groups = whatsapp_client.list_groups(user_id=user_id)
     if not groups:
         return _ok("Групп не найдено.")
     lines = ["💬 *WhatsApp группы:*"]
@@ -403,17 +415,18 @@ def whatsapp_list_groups(**_kwargs) -> dict:
     return _ok("\n".join(lines))
 
 
-def whatsapp_review_unread(**_kwargs) -> dict:
+def whatsapp_review_unread(*, _user_id: Optional[int] = None, **_kwargs) -> dict:
     """Return a prioritized Haiku-generated summary of unread WhatsApp chats.
 
     Does NOT return raw messages — the user reads those in WhatsApp itself.
     Output is a 🔴/🟡/⚪ priority breakdown so the agent (and user) sees who
     needs a reply and what each conversation is about.
     """
-    st = whatsapp_client.status()
+    user_id = _user_id
+    st = whatsapp_client.status(user_id=user_id)
     if not st.get("ready"):
         return _err(f"WhatsApp bridge не готов: {st.get('error') or 'не авторизован'}")
-    chats = whatsapp_client.unread_chats()
+    chats = whatsapp_client.unread_chats(user_id=user_id)
     if not chats:
         return _ok("В WhatsApp нет непрочитанных сообщений.")
 
@@ -426,31 +439,32 @@ def whatsapp_review_unread(**_kwargs) -> dict:
     return _ok(header + summary)
 
 
-def whatsapp_send_to_any(*, chat_query: str, message: str, **_kwargs) -> dict:
+def whatsapp_send_to_any(*, chat_query: str, message: str, _user_id: Optional[int] = None, **_kwargs) -> dict:
     """Multi-source recipient resolution:
       1. whatsapp_groups.json registry (with signature support)
       2. Baileys fuzzy chat search (known WhatsApp chats and groups)
       3. Google Contacts → phone number → WhatsApp JID
     """
-    st = whatsapp_client.status()
+    user_id = _user_id
+    st = whatsapp_client.status(user_id=user_id)
     if not st.get("ready"):
         return _err(f"WhatsApp bridge не готов: {st.get('error') or 'не авторизован'}")
 
     needle = chat_query.lower().strip()
 
     # 1. Registry first — preserves configured signatures
-    registry = whatsapp_client._load_registry()
+    registry = whatsapp_client._load_registry(user_id=user_id)
     if needle in registry:
-        ok, msg = whatsapp_client.send_to_name(chat_query, message)
+        ok, msg = whatsapp_client.send_to_name(chat_query, message, user_id=user_id)
         if ok:
             return _ok(f"💬 Отправлено в WhatsApp: «{chat_query}»")
         return _err(f"WhatsApp: {msg}")
 
     # 2. Fuzzy search across Baileys-known chats
-    matches = whatsapp_client.find_chats(chat_query)
+    matches = whatsapp_client.find_chats(chat_query, user_id=user_id)
     if len(matches) == 1:
         chat = matches[0]
-        ok, msg = whatsapp_client.send_to_chat(chat["id"], message)
+        ok, msg = whatsapp_client.send_to_chat(chat["id"], message, user_id=user_id)
         if ok:
             return _ok(f"💬 Отправлено в WhatsApp: «{chat['name']}»")
         return _err(f"WhatsApp: {msg}")
@@ -462,11 +476,11 @@ def whatsapp_send_to_any(*, chat_query: str, message: str, **_kwargs) -> dict:
         return _err("\n".join(lines))
 
     # 3. Google Contacts → phone → WA JID
-    contact = contacts_client.find_contact(chat_query)
+    contact = contacts_client.find_contact(chat_query, user_id=user_id)
     if contact and contact.get("phone"):
         jid = whatsapp_client.phone_to_jid(contact["phone"])
         display = contact.get("name") or chat_query
-        ok, msg = whatsapp_client.send_to_chat(jid, message)
+        ok, msg = whatsapp_client.send_to_chat(jid, message, user_id=user_id)
         if ok:
             return _ok(f"💬 Отправлено в WhatsApp: «{display}» (+{contact['phone']})")
         return _err(f"WhatsApp ({display}): {msg}")
@@ -483,6 +497,7 @@ def record_completed_task(
     *,
     title: str,
     duration_minutes: int = 30,
+    _user_id: Optional[int] = None,
     **_kwargs,
 ) -> dict:
     """Log a task that was done today but wasn't in the plan.
@@ -490,13 +505,14 @@ def record_completed_task(
     Finds a past free slot today and creates the task already marked as done.
     Falls back to placing it `duration_minutes` before now if no past gap exists.
     """
+    user_id = _user_id
     tz = pytz.timezone(config.TIMEZONE)
     now = datetime.datetime.now(tz)
     today = now.date()
 
     # Search for free slots throughout the active day
     try:
-        slots = calendar_client.find_free_slots(today, duration_minutes, "07:00", "23:00")
+        slots = calendar_client.find_free_slots(today, duration_minutes, "07:00", "23:00", user_id=user_id)
     except Exception:
         slots = []
 
@@ -515,7 +531,7 @@ def record_completed_task(
         placement_dt = now - datetime.timedelta(minutes=duration_minutes)
 
     try:
-        calendar_client.record_completed_task(title, placement_dt, duration_minutes)
+        calendar_client.record_completed_task(title, placement_dt, duration_minutes, user_id=user_id)
         end = placement_dt + datetime.timedelta(minutes=duration_minutes)
         return _ok(
             f"✅ Записала задним числом: «{title}»\n"
@@ -528,7 +544,7 @@ def record_completed_task(
 
 # ─── A2A (Agent2Agent) — calling external agents ─────────────────────────────
 
-def a2a_list_known_agents(**_kwargs) -> dict:
+def a2a_list_known_agents(*, _user_id: Optional[int] = None, **_kwargs) -> dict:
     """List external A2A agents that have been registered locally."""
     agents = a2a_client.list_known_agents()
     if not agents:
@@ -548,7 +564,7 @@ def a2a_list_known_agents(**_kwargs) -> dict:
 
 
 def a2a_discover(*, url: str, friendly_name: Optional[str] = None,
-                 api_key: Optional[str] = None, **_kwargs) -> dict:
+                 api_key: Optional[str] = None, _user_id: Optional[int] = None, **_kwargs) -> dict:
     """Fetch Agent Card from a remote A2A server and save under friendly_name."""
     ok, payload = a2a_client.discover_agent(url, friendly_name, api_key)
     if not ok:
@@ -560,7 +576,7 @@ def a2a_discover(*, url: str, friendly_name: Optional[str] = None,
 
 
 def a2a_call_agent(*, agent_name: str, tool: str,
-                   params: Optional[dict] = None, **_kwargs) -> dict:
+                   params: Optional[dict] = None, _user_id: Optional[int] = None, **_kwargs) -> dict:
     """Send a task to a registered A2A agent."""
     ok, payload = a2a_client.call_agent(agent_name, tool, params or {})
     if not ok:
@@ -574,7 +590,7 @@ def a2a_call_agent(*, agent_name: str, tool: str,
     return _ok(f"🤖 [{agent_name}] {summary}")
 
 
-def a2a_remove_agent(*, name: str, **_kwargs) -> dict:
+def a2a_remove_agent(*, name: str, _user_id: Optional[int] = None, **_kwargs) -> dict:
     """Delete a registered A2A agent from the local registry."""
     ok, msg = a2a_client.remove_agent(name)
     return _ok(f"🗑 {msg}") if ok else _err(msg)
@@ -589,6 +605,7 @@ def schedule_action(
     at_time: Optional[str] = None,
     at_date: Optional[str] = None,
     repeat: Optional[str] = None,
+    _user_id: Optional[int] = None,
     **_kwargs,
 ) -> dict:
     """Schedule a natural-language action to fire later or repeat.
@@ -598,6 +615,7 @@ def schedule_action(
       action_text='выключи бойлер', at_time='23:00'
       action_text='включи увлажнитель на ночь', at_time='22:00', repeat='daily'
     """
+    user_id = _user_id
     tz = pytz.timezone(config.TIMEZONE)
     now = datetime.datetime.now(tz)
 
@@ -613,7 +631,7 @@ def schedule_action(
     else:
         return _err("Уточни когда — через сколько минут или в какое время.")
 
-    action = scheduled_actions.schedule_action(action_text, run_at, repeat=repeat)
+    action = scheduled_actions.schedule_action(action_text, run_at, repeat=repeat, user_id=user_id)
 
     if repeat == "daily":
         return _ok(f"⏰ Каждый день в {action['at_time']} буду делать: «{action_text}»")
@@ -624,8 +642,9 @@ def schedule_action(
     return _ok(f"⏰ Запланировано на {run_at.strftime('%d.%m в %H:%M')}: «{action_text}»")
 
 
-def list_scheduled_actions(**_kwargs) -> dict:
-    actions = scheduled_actions.list_actions()
+def list_scheduled_actions(*, _user_id: Optional[int] = None, **_kwargs) -> dict:
+    user_id = _user_id
+    actions = scheduled_actions.list_actions(user_id=user_id)
     if not actions:
         return _ok("Запланированных действий нет.")
     tz = pytz.timezone(config.TIMEZONE)
@@ -640,17 +659,19 @@ def list_scheduled_actions(**_kwargs) -> dict:
     return _ok("\n".join(lines))
 
 
-def cancel_scheduled_action(*, action_id: str, **_kwargs) -> dict:
-    if scheduled_actions.cancel_action(action_id):
+def cancel_scheduled_action(*, action_id: str, _user_id: Optional[int] = None, **_kwargs) -> dict:
+    user_id = _user_id
+    if scheduled_actions.cancel_action(action_id, user_id=user_id):
         return _ok(f"❌ Отменено: {action_id}")
     return _err(f"Не нашёл запланированное действие с id `{action_id}`.")
 
 
-def diary_write(*, text: str, **_kwargs) -> dict:
+def diary_write(*, text: str, _user_id: Optional[int] = None, **_kwargs) -> dict:
     """Append an entry to the personal diary (local file + Google Doc mirror)."""
+    user_id = _user_id
     if not text or not text.strip():
         return _err("Пустая запись — нечего сохранять.")
-    result = diary.append(text.strip())
+    result = diary.append(text.strip(), user_id=user_id)
     if not result.get("ok"):
         return _err(f"Не удалось записать: {result.get('error')}")
     if result.get("doc_synced"):
@@ -658,21 +679,23 @@ def diary_write(*, text: str, **_kwargs) -> dict:
     return _ok(f"📓 Записала в локальный файл (Google Doc не доступен: {result.get('error')}).")
 
 
-def diary_read(*, period: str = "today", **_kwargs) -> dict:
+def diary_read(*, period: str = "today", _user_id: Optional[int] = None, **_kwargs) -> dict:
     """Read diary entries for a period: today, yesterday, week, month, all, YYYY-MM, YYYY-MM-DD."""
-    text = diary.read(period=period)
-    url = diary.doc_url()
+    user_id = _user_id
+    text = diary.read(period=period, user_id=user_id)
+    url = diary.doc_url(user_id=user_id)
     suffix = f"\n\n🔗 [Открыть дневник в Google Docs]({url})" if url else ""
     return _ok(text + suffix)
 
 
-def diary_backfill(**_kwargs) -> dict:
+def diary_backfill(*, _user_id: Optional[int] = None, **_kwargs) -> dict:
     """Backfill diary from existing session_summaries.jsonl.
 
     Adds a section per past day that's missing from the diary. Idempotent —
     days already present in the diary are skipped.
     """
-    r = diary.backfill_from_summaries()
+    user_id = _user_id
+    r = diary.backfill_from_summaries(user_id=user_id)
     if not r.get("ok"):
         return _err(f"Не удалось: {r.get('error')}")
     added = r.get("days_added", 0)
@@ -682,9 +705,7 @@ def diary_backfill(**_kwargs) -> dict:
     parts = [f"📓 Добавлено в дневник: *{added}* дн."]
     if r.get("added_dates"):
         parts.append("Даты: " + ", ".join(r["added_dates"]))
-    if skipped:
-        parts.append(f"Пропущено (уже в дневнике): {skipped} дн.")
-    url = diary.doc_url()
+    url = diary.doc_url(user_id=user_id)
     if url:
         parts.append(f"🔗 [Открыть дневник]({url})")
     return _ok("\n".join(parts))

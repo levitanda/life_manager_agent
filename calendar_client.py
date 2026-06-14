@@ -15,15 +15,15 @@ logger = logging.getLogger(__name__)
 _calendar_ids: dict[str, str] = {}
 
 
-def _get_service():
-    return build("calendar", "v3", credentials=google_auth.get_credentials())
+def _get_service(user_id: Optional[int] = None):
+    return build("calendar", "v3", credentials=google_auth.get_credentials(user_id))
 
 
-def _get_or_create_calendar(name: str) -> str:
+def _get_or_create_calendar(name: str, user_id: Optional[int] = None) -> str:
     if name in _calendar_ids:
         return _calendar_ids[name]
 
-    svc = _get_service()
+    svc = _get_service(user_id)
     calendars = svc.calendarList().list().execute().get("items", [])
     for cal in calendars:
         if cal["summary"] == name:
@@ -47,6 +47,8 @@ def add_task(
     start_dt: Optional[datetime.datetime] = None,
     duration_minutes: int = 60,
     attendees: Optional[list] = None,
+    *,
+    user_id: Optional[int] = None,
 ) -> str:
     """Add a task. task_type: 'short' or 'long'.
     - start_dt set → timed event (start_dt to start_dt + duration_minutes)
@@ -55,7 +57,7 @@ def add_task(
     """
     tz = pytz.timezone(config.TIMEZONE)
     cal_name = config.SHORT_TASK_CALENDAR if task_type == "short" else config.LONG_TASK_CALENDAR
-    cal_id = _get_or_create_calendar(cal_name)
+    cal_id = _get_or_create_calendar(cal_name, user_id)
     props = {"agent_task": "true", "task_type": task_type, "status": "active"}
 
     if start_dt is not None:
@@ -83,7 +85,7 @@ def add_task(
     if attendees:
         event["attendees"] = [{"email": email} for email in attendees]
     result = (
-        _get_service()
+        _get_service(user_id)
         .events()
         .insert(calendarId=cal_id, body=event, sendUpdates="all" if attendees else "none")
         .execute()
@@ -91,7 +93,12 @@ def add_task(
     return result["id"]
 
 
-def get_active_tasks(task_type: str, target_date: Optional[datetime.date] = None) -> list[dict]:
+def get_active_tasks(
+    task_type: str,
+    target_date: Optional[datetime.date] = None,
+    *,
+    user_id: Optional[int] = None,
+) -> list[dict]:
     """Return active (non-completed) tasks of the given type.
 
     target_date=None  → all tasks not yet ended (for /tasks command)
@@ -106,12 +113,12 @@ def get_active_tasks(task_type: str, target_date: Optional[datetime.date] = None
 
     cal_name = config.SHORT_TASK_CALENDAR if task_type == "short" else config.LONG_TASK_CALENDAR
     try:
-        cal_id = _get_or_create_calendar(cal_name)
+        cal_id = _get_or_create_calendar(cal_name, user_id)
     except Exception:
         return []
 
     result = (
-        _get_service()
+        _get_service(user_id)
         .events()
         .list(
             calendarId=cal_id,
@@ -169,13 +176,13 @@ def get_active_tasks(task_type: str, target_date: Optional[datetime.date] = None
     return tasks
 
 
-def delete_task(task_id: str, cal_id: str) -> bool:
-    _get_service().events().delete(calendarId=cal_id, eventId=task_id).execute()
+def delete_task(task_id: str, cal_id: str, *, user_id: Optional[int] = None) -> bool:
+    _get_service(user_id).events().delete(calendarId=cal_id, eventId=task_id).execute()
     return True
 
 
-def complete_task(task_id: str, cal_id: str) -> bool:
-    svc = _get_service()
+def complete_task(task_id: str, cal_id: str, *, user_id: Optional[int] = None) -> bool:
+    svc = _get_service(user_id)
     event = svc.events().get(calendarId=cal_id, eventId=task_id).execute()
     props = event.setdefault("extendedProperties", {}).setdefault("private", {})
     props["status"] = "done"
@@ -183,11 +190,11 @@ def complete_task(task_id: str, cal_id: str) -> bool:
     return True
 
 
-def save_progress(text: str) -> None:
+def save_progress(text: str, *, user_id: Optional[int] = None) -> None:
     """Save user's evening progress note."""
     tz = pytz.timezone(config.TIMEZONE)
     today = _today(tz)
-    cal_id = _get_or_create_calendar(config.PROGRESS_CALENDAR)
+    cal_id = _get_or_create_calendar(config.PROGRESS_CALENDAR, user_id)
     event = {
         "summary": f"Прогресс: {today.isoformat()}",
         "description": text,
@@ -195,11 +202,15 @@ def save_progress(text: str) -> None:
         "end": {"date": today.isoformat()},
         "extendedProperties": {"private": {"agent_progress": "true"}},
     }
-    _get_service().events().insert(calendarId=cal_id, body=event).execute()
+    _get_service(user_id).events().insert(calendarId=cal_id, body=event).execute()
 
 
 
-def get_todays_calendar_events(target_date: Optional[datetime.date] = None) -> list[dict]:
+def get_todays_calendar_events(
+    target_date: Optional[datetime.date] = None,
+    *,
+    user_id: Optional[int] = None,
+) -> list[dict]:
     """Return events from the primary Google Calendar for the given date (default: today)."""
     tz = pytz.timezone(config.TIMEZONE)
     date = target_date or _today(tz)
@@ -207,7 +218,7 @@ def get_todays_calendar_events(target_date: Optional[datetime.date] = None) -> l
     end = datetime.datetime.combine(date, datetime.time.max, tzinfo=tz).isoformat()
 
     result = (
-        _get_service()
+        _get_service(user_id)
         .events()
         .list(
             calendarId="primary",
@@ -232,6 +243,8 @@ def record_completed_task(
     start_dt: datetime.datetime,
     duration_minutes: int = 30,
     task_type: str = "short",
+    *,
+    user_id: Optional[int] = None,
 ) -> str:
     """Create a timed event already marked as done (for retroactive logging)."""
     tz = pytz.timezone(config.TIMEZONE)
@@ -239,7 +252,7 @@ def record_completed_task(
         start_dt = tz.localize(start_dt)
     end_dt = start_dt + datetime.timedelta(minutes=duration_minutes)
     cal_name = config.SHORT_TASK_CALENDAR if task_type == "short" else config.LONG_TASK_CALENDAR
-    cal_id = _get_or_create_calendar(cal_name)
+    cal_id = _get_or_create_calendar(cal_name, user_id)
     event = {
         "summary": title,
         "start": {"dateTime": start_dt.isoformat(), "timeZone": config.TIMEZONE},
@@ -249,11 +262,17 @@ def record_completed_task(
             "retroactive": "true",
         }},
     }
-    result = _get_service().events().insert(calendarId=cal_id, body=event).execute()
+    result = _get_service(user_id).events().insert(calendarId=cal_id, body=event).execute()
     return result["id"]
 
 
-def find_event_by_title(title_query: str, look_ahead_days: int = 14, look_back_days: int = 1) -> list[dict]:
+def find_event_by_title(
+    title_query: str,
+    look_ahead_days: int = 14,
+    look_back_days: int = 1,
+    *,
+    user_id: Optional[int] = None,
+) -> list[dict]:
     """Search primary + task calendars for events whose summary matches query.
 
     Returns list of {id, cal_id, summary, start, end} sorted by start time.
@@ -266,14 +285,14 @@ def find_event_by_title(title_query: str, look_ahead_days: int = 14, look_back_d
 
     cal_ids = ["primary"]
     try:
-        cal_ids.append(_get_or_create_calendar(config.SHORT_TASK_CALENDAR))
-        cal_ids.append(_get_or_create_calendar(config.LONG_TASK_CALENDAR))
+        cal_ids.append(_get_or_create_calendar(config.SHORT_TASK_CALENDAR, user_id))
+        cal_ids.append(_get_or_create_calendar(config.LONG_TASK_CALENDAR, user_id))
     except Exception:
         pass
 
     needle = title_query.lower().strip()
     matches: list[dict] = []
-    svc = _get_service()
+    svc = _get_service(user_id)
     for cal_id in cal_ids:
         try:
             result = svc.events().list(
@@ -315,6 +334,8 @@ def reschedule_task(
     cal_id: str,
     new_start_dt: datetime.datetime,
     new_end_dt: datetime.datetime,
+    *,
+    user_id: Optional[int] = None,
 ) -> bool:
     """Move a timed event to a new start/end datetime."""
     tz = pytz.timezone(config.TIMEZONE)
@@ -322,7 +343,7 @@ def reschedule_task(
         new_start_dt = tz.localize(new_start_dt)
     if new_end_dt.tzinfo is None:
         new_end_dt = tz.localize(new_end_dt)
-    svc = _get_service()
+    svc = _get_service(user_id)
     event = svc.events().get(calendarId=cal_id, eventId=task_id).execute()
     event["start"] = {"dateTime": new_start_dt.isoformat(), "timeZone": config.TIMEZONE}
     event["end"] = {"dateTime": new_end_dt.isoformat(), "timeZone": config.TIMEZONE}
@@ -330,7 +351,11 @@ def reschedule_task(
     return True
 
 
-def get_all_events_for_date(target_date: datetime.date) -> list[dict]:
+def get_all_events_for_date(
+    target_date: datetime.date,
+    *,
+    user_id: Optional[int] = None,
+) -> list[dict]:
     """Return all timed events from primary + task calendars for a date."""
     tz = pytz.timezone(config.TIMEZONE)
     start = datetime.datetime.combine(target_date, datetime.time.min, tzinfo=tz).isoformat()
@@ -338,13 +363,13 @@ def get_all_events_for_date(target_date: datetime.date) -> list[dict]:
 
     cal_ids = ["primary"]
     try:
-        cal_ids.append(_get_or_create_calendar(config.SHORT_TASK_CALENDAR))
-        cal_ids.append(_get_or_create_calendar(config.LONG_TASK_CALENDAR))
+        cal_ids.append(_get_or_create_calendar(config.SHORT_TASK_CALENDAR, user_id))
+        cal_ids.append(_get_or_create_calendar(config.LONG_TASK_CALENDAR, user_id))
     except Exception:
         pass
 
     events = []
-    svc = _get_service()
+    svc = _get_service(user_id)
     for cal_id in cal_ids:
         try:
             result = svc.events().list(
@@ -382,6 +407,8 @@ def find_free_slots(
     duration_minutes: int = 60,
     work_start: str = "09:00",
     work_end: str = "22:00",
+    *,
+    user_id: Optional[int] = None,
 ) -> list[dict]:
     """Return free time slots on target_date within work hours."""
     tz = pytz.timezone(config.TIMEZONE)
@@ -390,7 +417,7 @@ def find_free_slots(
     day_start = tz.localize(datetime.datetime(target_date.year, target_date.month, target_date.day, ws_h, ws_m))
     day_end = tz.localize(datetime.datetime(target_date.year, target_date.month, target_date.day, we_h, we_m))
 
-    events = get_all_events_for_date(target_date)
+    events = get_all_events_for_date(target_date, user_id=user_id)
     busy = sorted([(ev["start"], ev["end"]) for ev in events])
 
     # Merge overlapping busy intervals
@@ -418,25 +445,35 @@ def find_free_slots(
     return slots
 
 
-def get_conflicts(start_dt: datetime.datetime, end_dt: datetime.datetime) -> list[str]:
+def get_conflicts(
+    start_dt: datetime.datetime,
+    end_dt: datetime.datetime,
+    *,
+    user_id: Optional[int] = None,
+) -> list[str]:
     """Return titles of timed events that overlap the given window."""
     tz = pytz.timezone(config.TIMEZONE)
     if start_dt.tzinfo is None:
         start_dt = tz.localize(start_dt)
     if end_dt.tzinfo is None:
         end_dt = tz.localize(end_dt)
-    events = get_all_events_for_date(start_dt.date())
+    events = get_all_events_for_date(start_dt.date(), user_id=user_id)
     return [ev["title"] for ev in events if ev["start"] < end_dt and ev["end"] > start_dt]
 
 
-def get_week_events(start_date: datetime.date, end_date: datetime.date) -> dict[str, list[dict]]:
+def get_week_events(
+    start_date: datetime.date,
+    end_date: datetime.date,
+    *,
+    user_id: Optional[int] = None,
+) -> dict[str, list[dict]]:
     """Return primary calendar events for a date range, grouped by ISO date string."""
     tz = pytz.timezone(config.TIMEZONE)
     start = datetime.datetime.combine(start_date, datetime.time.min, tzinfo=tz).isoformat()
     end = datetime.datetime.combine(end_date, datetime.time.max, tzinfo=tz).isoformat()
 
     result = (
-        _get_service()
+        _get_service(user_id)
         .events()
         .list(
             calendarId="primary",
@@ -462,17 +499,21 @@ def get_week_events(start_date: datetime.date, end_date: datetime.date) -> dict[
     return week
 
 
-def get_progress_before_date(target_date: Optional[datetime.date] = None) -> Optional[str]:
+def get_progress_before_date(
+    target_date: Optional[datetime.date] = None,
+    *,
+    user_id: Optional[int] = None,
+) -> Optional[str]:
     """Return the progress note for the day before target_date (default: yesterday)."""
     tz = pytz.timezone(config.TIMEZONE)
     ref = (target_date or _today(tz)) - datetime.timedelta(days=1)
     try:
-        cal_id = _get_or_create_calendar(config.PROGRESS_CALENDAR)
+        cal_id = _get_or_create_calendar(config.PROGRESS_CALENDAR, user_id)
     except Exception:
         return None
 
     result = (
-        _get_service()
+        _get_service(user_id)
         .events()
         .list(
             calendarId=cal_id,

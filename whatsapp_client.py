@@ -1,7 +1,13 @@
 """HTTP client for the local Baileys WhatsApp bridge.
 
-The bridge is a Node.js sidecar (whatsapp_bridge/server.js) that maintains
-a persistent WhatsApp session and exposes a tiny REST API on 127.0.0.1.
+Two modes:
+
+- **Legacy single-user (user_id=None)**: bridge URL from env WHATSAPP_BRIDGE_URL
+  (default 127.0.0.1:3030), registry from project-root whatsapp_groups.json.
+
+- **Multi-tenant (user_id given)**: bridge URL constructed from the
+  `whatsapp_bridges.port` row for the user (falls back to legacy env if no
+  row exists). Registry at data/users/{user_id}/whatsapp_groups.json.
 
 Registry file `whatsapp_groups.json` supports both flat and rich format:
 
@@ -15,6 +21,8 @@ Registry file `whatsapp_groups.json` supports both flat and rich format:
   }
 """
 
+from __future__ import annotations
+
 import json
 import logging
 import os
@@ -25,8 +33,37 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-BRIDGE_URL = os.environ.get("WHATSAPP_BRIDGE_URL", "http://127.0.0.1:3030")
-GROUPS_FILE = Path(__file__).parent / "whatsapp_groups.json"
+LEGACY_BRIDGE_URL = os.environ.get("WHATSAPP_BRIDGE_URL", "http://127.0.0.1:3030")
+LEGACY_GROUPS_FILE = Path(__file__).parent / "whatsapp_groups.json"
+
+
+# ─── Per-user URL + registry path resolution ─────────────────────────────────
+
+
+def _bridge_url(user_id: Optional[int]) -> str:
+    if user_id is None:
+        return LEGACY_BRIDGE_URL
+    try:
+        import db
+        with db.session_scope() as s:
+            row = s.get(db.WhatsAppBridge, user_id)
+            if row and row.port:
+                return f"http://127.0.0.1:{int(row.port)}"
+    except Exception as e:
+        logger.warning("WhatsApp bridge lookup failed for user %s: %s", user_id, e)
+    return LEGACY_BRIDGE_URL
+
+
+def _groups_file(user_id: Optional[int]) -> Path:
+    if user_id is None:
+        return LEGACY_GROUPS_FILE
+    import db
+    base = Path(db.data_dir(), "users", str(user_id))
+    base.mkdir(parents=True, exist_ok=True)
+    return base / "whatsapp_groups.json"
+
+
+# ─── Registry ────────────────────────────────────────────────────────────────
 
 
 def _normalize_entry(value) -> dict:
@@ -38,16 +75,15 @@ def _normalize_entry(value) -> dict:
     return {}
 
 
-def _load_registry() -> dict:
-    """Returns {name_lower: {chat_id, signature?, aliases?}} from whatsapp_groups.json.
-    Aliases are also indexed under their own lowercase keys.
-    """
-    if not GROUPS_FILE.exists():
+def _load_registry(user_id: Optional[int] = None) -> dict:
+    """Returns {name_lower: {chat_id, signature?, aliases?}} from the user's registry."""
+    groups_file = _groups_file(user_id)
+    if not groups_file.exists():
         return {}
     try:
-        raw = json.loads(GROUPS_FILE.read_text(encoding="utf-8"))
+        raw = json.loads(groups_file.read_text(encoding="utf-8"))
     except Exception as e:
-        logger.warning("whatsapp_groups.json load failed: %s", e)
+        logger.warning("%s load failed: %s", groups_file, e)
         return {}
 
     registry: dict = {}
@@ -62,18 +98,21 @@ def _load_registry() -> dict:
     return registry
 
 
-def status() -> dict:
+# ─── Bridge HTTP API ──────────────────────────────────────────────────────────
+
+
+def status(user_id: Optional[int] = None) -> dict:
     try:
-        r = requests.get(f"{BRIDGE_URL}/status", timeout=3)
+        r = requests.get(f"{_bridge_url(user_id)}/status", timeout=3)
         return r.json()
     except Exception as e:
         return {"ready": False, "error": str(e)}
 
 
-def list_groups() -> list[dict]:
+def list_groups(user_id: Optional[int] = None) -> list[dict]:
     """Live fetch from the bridge — requires authenticated session."""
     try:
-        r = requests.get(f"{BRIDGE_URL}/groups", timeout=15)
+        r = requests.get(f"{_bridge_url(user_id)}/groups", timeout=15)
         r.raise_for_status()
         return r.json().get("groups", [])
     except Exception as e:
@@ -81,10 +120,10 @@ def list_groups() -> list[dict]:
         return []
 
 
-def unread_chats() -> list[dict]:
+def unread_chats(user_id: Optional[int] = None) -> list[dict]:
     """Return chats with unread messages, each with up to 15 recent messages."""
     try:
-        r = requests.get(f"{BRIDGE_URL}/unread", timeout=15)
+        r = requests.get(f"{_bridge_url(user_id)}/unread", timeout=15)
         r.raise_for_status()
         return r.json().get("chats", [])
     except Exception as e:
@@ -92,9 +131,15 @@ def unread_chats() -> list[dict]:
         return []
 
 
-def get_chat_messages(chat_id: str, limit: int = 20) -> list[dict]:
+def get_chat_messages(
+    chat_id: str, limit: int = 20, *, user_id: Optional[int] = None
+) -> list[dict]:
     try:
-        r = requests.get(f"{BRIDGE_URL}/chat/{chat_id}/messages", params={"limit": limit}, timeout=10)
+        r = requests.get(
+            f"{_bridge_url(user_id)}/chat/{chat_id}/messages",
+            params={"limit": limit},
+            timeout=10,
+        )
         r.raise_for_status()
         return r.json().get("messages", [])
     except Exception as e:
@@ -102,10 +147,12 @@ def get_chat_messages(chat_id: str, limit: int = 20) -> list[dict]:
         return []
 
 
-def find_chats(query: str) -> list[dict]:
+def find_chats(query: str, *, user_id: Optional[int] = None) -> list[dict]:
     """Fuzzy search by chat name (groups + 1-on-1 contacts the bridge knows)."""
     try:
-        r = requests.post(f"{BRIDGE_URL}/find", json={"query": query}, timeout=10)
+        r = requests.post(
+            f"{_bridge_url(user_id)}/find", json={"query": query}, timeout=10
+        )
         r.raise_for_status()
         return r.json().get("matches", [])
     except Exception as e:
@@ -114,12 +161,7 @@ def find_chats(query: str) -> list[dict]:
 
 
 def phone_to_jid(phone: str) -> str:
-    """Convert a phone string (any format) to WhatsApp personal JID.
-
-    Uses phonenumbers to normalise local numbers (e.g. Israeli 0528957566)
-    into international format (972528957566) using DEFAULT_PHONE_REGION
-    from env (default 'IL').
-    """
+    """Convert a phone string (any format) to WhatsApp personal JID."""
     try:
         import phonenumbers
         region = os.environ.get("DEFAULT_PHONE_REGION", "IL")
@@ -130,17 +172,16 @@ def phone_to_jid(phone: str) -> str:
         logger.warning("phone_to_jid: invalid number %r (region %s)", phone, region)
     except Exception as e:
         logger.warning("phone_to_jid: failed to parse %r: %s", phone, e)
-    # Fallback: strip non-digits (may produce an invalid JID — Baileys will time out)
     digits = "".join(c for c in phone if c.isdigit())
     return f"{digits}@s.whatsapp.net"
 
 
-def send_to_chat(chat_id: str, text: str) -> tuple[bool, str]:
-    # First message to an unseen JID may take 20-25s while Baileys negotiates
-    # the session, so we allow a generous timeout.
+def send_to_chat(
+    chat_id: str, text: str, *, user_id: Optional[int] = None
+) -> tuple[bool, str]:
     try:
         r = requests.post(
-            f"{BRIDGE_URL}/send",
+            f"{_bridge_url(user_id)}/send",
             json={"chatId": chat_id, "text": text},
             timeout=45,
         )
@@ -156,9 +197,11 @@ def send_to_chat(chat_id: str, text: str) -> tuple[bool, str]:
         return False, str(e)
 
 
-def send_to_name(name: str, text: str) -> tuple[bool, str]:
+def send_to_name(
+    name: str, text: str, *, user_id: Optional[int] = None
+) -> tuple[bool, str]:
     """Resolve a friendly name (or alias) and send. Appends configured signature."""
-    registry = _load_registry()
+    registry = _load_registry(user_id)
     entry = registry.get(name.lower().strip())
     if not entry:
         return (
@@ -169,4 +212,4 @@ def send_to_name(name: str, text: str) -> tuple[bool, str]:
     sig = entry.get("signature")
     if sig:
         full_text = f"{text}\n\n{sig}"
-    return send_to_chat(entry["chat_id"], full_text)
+    return send_to_chat(entry["chat_id"], full_text, user_id=user_id)

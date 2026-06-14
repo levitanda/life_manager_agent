@@ -1,6 +1,7 @@
 """Google People API — search contacts by name."""
 
 import logging
+from typing import Optional
 
 from googleapiclient.discovery import build
 
@@ -9,15 +10,15 @@ import google_auth
 logger = logging.getLogger(__name__)
 
 
-def _get_service():
-    return build("people", "v1", credentials=google_auth.get_credentials())
+def _get_service(user_id: Optional[int] = None):
+    return build("people", "v1", credentials=google_auth.get_credentials(user_id))
 
 
-def find_contact_email(name: str) -> str | None:
+def find_contact_email(name: str, *, user_id: Optional[int] = None) -> str | None:
     """Return the first email address for a contact matching name, or None."""
     try:
         result = (
-            _get_service()
+            _get_service(user_id)
             .people()
             .searchContacts(query=name, readMask="names,emailAddresses")
             .execute()
@@ -31,13 +32,13 @@ def find_contact_email(name: str) -> str | None:
     return None
 
 
-def find_contact(name: str) -> dict | None:
+def find_contact(name: str, *, user_id: Optional[int] = None) -> dict | None:
     """Return {name, email, phone} for the first matching contact, or None.
     Phone is normalized to digits only (international format without '+').
     """
     try:
         result = (
-            _get_service()
+            _get_service(user_id)
             .people()
             .searchContacts(query=name, readMask="names,emailAddresses,phoneNumbers")
             .execute()

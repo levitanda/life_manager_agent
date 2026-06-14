@@ -36,8 +36,8 @@ def mock_google(monkeypatch):
         "body": {"content": []}
     }
     docs_svc.documents.return_value.batchUpdate.return_value.execute.return_value = {}
-    monkeypatch.setattr(diary_mod, "_docs_service", lambda: docs_svc)
-    monkeypatch.setattr(diary_mod, "_drive_service", lambda: drive_svc)
+    monkeypatch.setattr(diary_mod, "_docs_service", lambda user_id=None: docs_svc)
+    monkeypatch.setattr(diary_mod, "_drive_service", lambda user_id=None: drive_svc)
     return {"docs": docs_svc, "drive": drive_svc}
 
 
@@ -219,3 +219,25 @@ def test_backfill_missing_file(tmp_diary, mock_google):
     import diary
     r = diary.backfill_from_summaries("/nonexistent/path.jsonl")
     assert r["ok"] is False
+
+
+# ─── Per-user isolation ──────────────────────────────────────────────────────
+
+
+def test_per_user_paths_isolated(tmp_path, monkeypatch, mock_google):
+    """Two different user_ids write to different files; neither sees the other's content."""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "app.db"))
+    monkeypatch.setenv("MASTER_KEY", "JLnW8eUL0pxOmMI5jIc4DkUlMD3jl9jY9LVPaDz1WMc=")
+    import db, crypto, diary
+    db.reset_for_tests()
+    crypto.reset_for_tests()
+    db.init_db()
+
+    diary.append("личное у Ани", when=_now_at(9, 0), user_id=10)
+    diary.append("личное у Маши", when=_now_at(9, 0), user_id=20)
+
+    ann = diary.read("today", user_id=10)
+    masha = diary.read("today", user_id=20)
+    assert "личное у Ани" in ann and "личное у Маши" not in ann
+    assert "личное у Маши" in masha and "личное у Ани" not in masha

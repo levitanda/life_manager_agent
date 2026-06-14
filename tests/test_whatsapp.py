@@ -12,14 +12,14 @@ import tools
 # ─── client: registry loading ────────────────────────────────────────────────
 
 def test_load_registry_missing_file(tmp_path, monkeypatch):
-    monkeypatch.setattr(whatsapp_client, "GROUPS_FILE", tmp_path / "missing.json")
+    monkeypatch.setattr(whatsapp_client, "LEGACY_GROUPS_FILE", tmp_path / "missing.json")
     assert whatsapp_client._load_registry() == {}
 
 
 def test_load_registry_flat_format(tmp_path, monkeypatch):
     p = tmp_path / "g.json"
     p.write_text(json.dumps({"семья": "120363@g.us", "Покупки": "120364@g.us"}), encoding="utf-8")
-    monkeypatch.setattr(whatsapp_client, "GROUPS_FILE", p)
+    monkeypatch.setattr(whatsapp_client, "LEGACY_GROUPS_FILE", p)
     reg = whatsapp_client._load_registry()
     assert "семья" in reg
     assert "покупки" in reg
@@ -35,7 +35,7 @@ def test_load_registry_rich_format_with_aliases(tmp_path, monkeypatch):
             "aliases": ["муж", "Жене"]
         }
     }), encoding="utf-8")
-    monkeypatch.setattr(whatsapp_client, "GROUPS_FILE", p)
+    monkeypatch.setattr(whatsapp_client, "LEGACY_GROUPS_FILE", p)
     reg = whatsapp_client._load_registry()
     assert "женя" in reg
     assert "муж" in reg
@@ -96,7 +96,7 @@ def test_send_to_chat_bridge_error():
 
 
 def test_send_to_name_unknown(tmp_path, monkeypatch):
-    monkeypatch.setattr(whatsapp_client, "GROUPS_FILE", tmp_path / "g.json")
+    monkeypatch.setattr(whatsapp_client, "LEGACY_GROUPS_FILE", tmp_path / "g.json")
     ok, msg = whatsapp_client.send_to_name("несуществующая", "hi")
     assert ok is False
     assert "не настроено" in msg
@@ -105,7 +105,7 @@ def test_send_to_name_unknown(tmp_path, monkeypatch):
 def test_send_to_name_flat_format(tmp_path, monkeypatch):
     p = tmp_path / "g.json"
     p.write_text(json.dumps({"покупки": "120363@g.us"}), encoding="utf-8")
-    monkeypatch.setattr(whatsapp_client, "GROUPS_FILE", p)
+    monkeypatch.setattr(whatsapp_client, "LEGACY_GROUPS_FILE", p)
     with patch("requests.post", return_value=_mock_resp(200, {"ok": True})) as mp:
         ok, msg = whatsapp_client.send_to_name("Покупки", "молоко")
     assert ok is True
@@ -123,7 +123,7 @@ def test_send_to_name_appends_signature(tmp_path, monkeypatch):
             "aliases": ["муж"]
         }
     }), encoding="utf-8")
-    monkeypatch.setattr(whatsapp_client, "GROUPS_FILE", p)
+    monkeypatch.setattr(whatsapp_client, "LEGACY_GROUPS_FILE", p)
     with patch("requests.post", return_value=_mock_resp(200, {"ok": True})) as mp:
         ok, _ = whatsapp_client.send_to_name("муж", "буду через час")
     assert ok is True

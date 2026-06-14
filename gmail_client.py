@@ -3,6 +3,7 @@
 import base64
 import logging
 from email.mime.text import MIMEText
+from typing import Optional
 
 from googleapiclient.discovery import build
 
@@ -25,13 +26,17 @@ def _decode_body(payload: dict) -> str:
     return ""
 
 
-def get_unread_emails(max_results: int = 15) -> list[dict]:
+def _get_service(user_id: Optional[int] = None):
+    return build("gmail", "v1", credentials=google_auth.get_credentials(user_id))
+
+
+def get_unread_emails(max_results: int = 15, *, user_id: Optional[int] = None) -> list[dict]:
     """
     Return up to max_results unread inbox emails from the last 2 days.
     Each item: {from, subject, snippet, body_preview}
     """
     try:
-        svc = build("gmail", "v1", credentials=google_auth.get_credentials())
+        svc = _get_service(user_id)
         result = (
             svc.users()
             .messages()
@@ -71,9 +76,9 @@ def get_unread_emails(max_results: int = 15) -> list[dict]:
         return []
 
 
-def send_email(to: str, subject: str, body: str) -> None:
+def send_email(to: str, subject: str, body: str, *, user_id: Optional[int] = None) -> None:
     """Send an email from the user's Gmail account."""
-    svc = build("gmail", "v1", credentials=google_auth.get_credentials())
+    svc = _get_service(user_id)
     msg = MIMEText(body, "plain", "utf-8")
     msg["to"] = to
     msg["subject"] = subject

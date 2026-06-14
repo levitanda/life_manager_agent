@@ -18,7 +18,7 @@ TZ = pytz.timezone("Asia/Jerusalem")
 @pytest.fixture
 def tmp_store(tmp_path, monkeypatch):
     p = tmp_path / "actions.json"
-    monkeypatch.setattr(scheduled_actions, "STORE_PATH", p)
+    monkeypatch.setattr(scheduled_actions, "LEGACY_STORE_PATH", p)
     yield p
 
 
