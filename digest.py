@@ -173,7 +173,7 @@ def generate_morning_digest(
 Будь конкретным и живым. Если в разговоре было что-то эмоционально важное (заболел, устала, переживает) — обязательно среагируй на это в дайджесте. Не игнорируй контекст. Не повторяй просто список — дай осмысленные рекомендации."""
 
     result = llm.chat(
-        llm.MODEL_LLAMA_70B,
+        llm.MODEL_SONNET_BEDROCK,
         "",
         [{"role": "user", "content": prompt}],
         max_tokens=4096,
@@ -221,7 +221,7 @@ def generate_weekly_digest(
 Пиши конкретно и по делу, без пустых фраз."""
 
     result = llm.chat(
-        llm.MODEL_LLAMA_70B,
+        llm.MODEL_SONNET_BEDROCK,
         "",
         [{"role": "user", "content": prompt}],
         max_tokens=4096,
@@ -242,7 +242,7 @@ def generate_evening_checkin() -> str:
         "Без вступлений, сразу текст сообщения."
     )
     result = llm.chat(
-        llm.MODEL_LLAMA_70B,
+        llm.MODEL_SONNET_BEDROCK,
         "",
         [{"role": "user", "content": prompt}],
         max_tokens=256,

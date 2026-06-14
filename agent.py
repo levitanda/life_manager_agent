@@ -27,16 +27,28 @@ import tools
 logger = logging.getLogger(__name__)
 
 MAX_ITERATIONS = 6
-MODEL = llm.MODEL_LLAMA_70B
-PERSONALITY_PATH = Path(__file__).parent / "personality.json"
+# Sonnet 4.6 via Bedrock — same model as the original Anthropic SDK call.
+# Nova Pro is cheaper but calls tools much more eagerly than Sonnet, which
+# resulted in unprompted "WhatsApp summary" replies for every user message.
+MODEL = llm.MODEL_SONNET_BEDROCK
+LEGACY_PERSONALITY_PATH = Path(__file__).parent / "personality.json"
 
 
-def _load_personality() -> dict:
+def _personality_path(user_id: Optional[int]) -> Path:
+    """Per-user personality.json under data/users/{id}/ (falls back to project root in legacy mode)."""
+    if user_id is None:
+        return LEGACY_PERSONALITY_PATH
+    import db
+    return Path(db.data_dir(), "users", str(user_id), "personality.json")
+
+
+def _load_personality(user_id: Optional[int] = None) -> dict:
+    path = _personality_path(user_id)
     try:
-        with open(PERSONALITY_PATH, encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             return json.load(f)
     except Exception as e:
-        logger.warning("personality.json load failed: %s", e)
+        logger.warning("personality.json load failed (path=%s): %s", path, e)
         return {"name": "ассистент", "humor": 50, "warmth": 70, "terseness": 50, "honesty": 90, "proactivity": 50, "style_hints": []}
 
 
@@ -102,7 +114,7 @@ def run_agent(
     right Google account / WhatsApp bridge / data dir. None preserves legacy
     single-user behavior.
     """
-    persona = _load_personality()
+    persona = _load_personality(user_id)
     system = _build_system_prompt(persona, active_tasks or [], summaries or [])
     messages = _build_messages(text, history)
 
