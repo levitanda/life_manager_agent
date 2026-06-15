@@ -424,7 +424,7 @@ async def _handle_agent_result(
                     target_date = datetime.date.fromisoformat(act["target_date"])
                 except Exception:
                     pass
-            await _send_morning_digest(context.application, target_date)
+            await _send_morning_digest(context.application, target_date, target_user_id=user_id)
         elif kind == "send_weekly_digest":
             tz = pytz.timezone(config.TIMEZONE)
             today = datetime.datetime.now(tz).date()
@@ -584,7 +584,7 @@ async def _execute_action(
         target_date = datetime.date.fromisoformat(date_str) if date_str else None
         label = date_str or "сегодня"
         await update.message.reply_text(f"⏳ Генерирую дайджест на {label}...")
-        await _send_morning_digest(context.application, target_date)
+        await _send_morning_digest(context.application, target_date, target_user_id=user_id)
         return "[дайджест отправлен]"
 
     elif intent == "save_progress":

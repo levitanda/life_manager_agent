@@ -362,6 +362,64 @@ async def test_digest_delivered_when_every_optional_integration_fails():
     assert chats == [222], "digest must arrive even when every integration is down"
 
 
+async def test_agent_send_digest_action_routes_to_user_not_daria():
+    """When the agent returns action='send_digest', _handle_agent_result must
+    pass user_id through so the digest goes to THE REQUESTER, not Daria.
+
+    This is the regression for: friend wrote 'пришли дайджест', the agent
+    fired send_digest action, but _send_morning_digest was called without
+    target_user_id → legacy path → message landed in Daria's chat.
+    """
+    friend_id = _make_user(222)
+    import bot_handlers
+
+    fake_app = MagicMock()
+    fake_app.bot.send_message = AsyncMock()
+    update = MagicMock()
+    update.effective_message.reply_text = AsyncMock()
+    update.message.reply_text = AsyncMock()
+    update.effective_chat.id = 222
+    context = MagicMock(application=fake_app)
+
+    seen_target_user_id = []
+    async def fake_morning(app, target_date=None, *, target_user_id=None):
+        seen_target_user_id.append(target_user_id)
+        await app.bot.send_message(chat_id=222, text="digest")
+
+    with patch.object(bot_handlers, "_send_morning_digest", side_effect=fake_morning):
+        result = {"text": "вот дайджест", "actions": [{"action": "send_digest"}]}
+        await bot_handlers._handle_agent_result(result, update, context, user_id=friend_id)
+
+    assert seen_target_user_id == [friend_id], (
+        f"_send_morning_digest was called with target_user_id={seen_target_user_id}, "
+        f"expected [{friend_id}]"
+    )
+
+
+async def test_legacy_get_digest_intent_routes_to_user_not_daria():
+    """Same regression but via the legacy parser path: intent='get_digest'."""
+    friend_id = _make_user(222)
+    import bot_handlers
+
+    fake_app = MagicMock()
+    fake_app.bot.send_message = AsyncMock()
+    update = MagicMock()
+    update.effective_message.reply_text = AsyncMock()
+    update.message.reply_text = AsyncMock()
+    context = MagicMock(application=fake_app)
+
+    seen = []
+    async def fake_morning(app, target_date=None, *, target_user_id=None):
+        seen.append(target_user_id)
+
+    with patch.object(bot_handlers, "_send_morning_digest", side_effect=fake_morning):
+        result = await bot_handlers._execute_action(
+            {"intent": "get_digest"}, [], "пришли дайджест", update, context, user_id=friend_id,
+        )
+
+    assert seen == [friend_id], f"got target_user_id={seen}"
+
+
 async def test_digest_skipped_silently_for_user_not_in_db():
     """When target_user_id points to a row that no longer exists, fall back
     to legacy chat_id rather than crashing or leaking to wrong account."""
