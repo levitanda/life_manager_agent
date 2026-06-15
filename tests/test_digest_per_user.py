@@ -211,6 +211,157 @@ async def test_legacy_digest_still_works_when_no_target_user_id():
 # ─── Test 3: inactive subscription user does NOT generate or send anything ─
 
 
+# ─── Test 4: regular new user receives a complete digest end-to-end ──────────
+
+
+async def _drive_digest(user_id, **overrides):
+    """Helper: run _send_morning_digest with every dependency mocked.
+    `overrides` lets a caller swap any client's return value or side_effect.
+    Returns (chat_ids_sent_to, all_chunk_texts).
+    """
+    import bot_handlers
+    fake_bot = MagicMock()
+    fake_bot.send_message = AsyncMock()
+    app = MagicMock(bot=fake_bot)
+
+    defaults = {
+        "events": [],
+        "tasks": [],
+        "progress": "",
+        "emails": [],
+        "weather": "Солнечно +25",
+        "news": [{"source": "TestNews", "title": "тест-новость"}],
+        "birthdays": [],
+        "history": [],
+        "summaries": [],
+        "wa_chats": [],
+        "wa_summary": "",
+        "digest_text": "Привет! Доброе утро ☀️",
+    }
+    defaults.update({k: v for k, v in overrides.items() if v is not None})
+
+    def kw(name):
+        v = defaults[name]
+        if isinstance(v, Exception):
+            return {"side_effect": v}
+        return {"return_value": v}
+
+    patches = [
+        patch("bot_handlers.calendar_client.get_todays_calendar_events", **kw("events")),
+        patch("bot_handlers.calendar_client.get_active_tasks", **kw("tasks")),
+        patch("bot_handlers.calendar_client.get_progress_before_date", **kw("progress")),
+        patch("bot_handlers.gmail_client.get_unread_emails", **kw("emails")),
+        patch("bot_handlers.weather_client.get_weather", **kw("weather")),
+        patch("bot_handlers.news_client.get_news_headlines", **kw("news")),
+        patch("bot_handlers.birthday_client.get_todays_birthdays", **kw("birthdays")),
+        patch("bot_handlers.conversation.get_history", **kw("history")),
+        patch("bot_handlers.conversation.get_recent_summaries", **kw("summaries")),
+        patch("bot_handlers.whatsapp_client.unread_chats", **kw("wa_chats")),
+        patch("bot_handlers.whatsapp_summary.summarize_unread_chats", **kw("wa_summary")),
+        patch("bot_handlers.digest_module.generate_morning_digest",
+              return_value=defaults["digest_text"]),
+        patch("bot_handlers.conversation.add"),
+        patch("bot_handlers.pushover_client.send_push", return_value=False),
+        patch("bot_handlers.asyncio.sleep", new=AsyncMock()),  # don't really wait 10s in tests
+    ]
+    for p in patches:
+        p.start()
+    try:
+        await bot_handlers._send_morning_digest(app, target_user_id=user_id)
+    finally:
+        for p in patches:
+            p.stop()
+    chat_ids = [c.kwargs.get("chat_id") for c in fake_bot.send_message.await_args_list]
+    texts = [c.kwargs.get("text") for c in fake_bot.send_message.await_args_list]
+    return chat_ids, texts
+
+
+async def test_regular_user_receives_complete_digest():
+    """End-to-end happy path: a normal (non-Daria) user with all integrations
+    working gets their digest delivered in full."""
+    friend_id = _make_user(222)
+    chats, texts = await _drive_digest(friend_id)
+    assert chats == [222]
+    assert texts and "Доброе утро" in texts[0]
+
+
+# ─── Test 5: digest is resilient to missing / failing integrations ──────────
+
+
+async def test_digest_delivered_when_whatsapp_disconnected():
+    """WhatsApp client raising must NOT block the digest — user still receives it."""
+    friend_id = _make_user(222)
+    chats, texts = await _drive_digest(
+        friend_id,
+        wa_chats=RuntimeError("bridge not reachable"),
+    )
+    assert chats == [222], f"digest not delivered: chats={chats}"
+    assert "Доброе утро" in (texts[0] or "")
+
+
+async def test_digest_delivered_when_gmail_fails():
+    """Expired Gmail token / API outage must not kill the digest."""
+    friend_id = _make_user(222)
+    from googleapiclient.errors import HttpError
+    chats, texts = await _drive_digest(
+        friend_id,
+        emails=RuntimeError("invalid_grant: token expired"),
+    )
+    assert chats == [222]
+    assert texts[0].startswith("Привет")
+
+
+async def test_digest_delivered_when_calendar_404():
+    """The exact failure shape that produced today's prod incident — a 404
+    on calendar fetch — must not block the digest from being delivered."""
+    friend_id = _make_user(222)
+    chats, texts = await _drive_digest(
+        friend_id,
+        events=Exception("HttpError 404 calendar not found"),
+        tasks=Exception("HttpError 404 calendar not found"),
+        progress=Exception("HttpError 404 calendar not found"),
+    )
+    assert chats == [222], "calendar 404 should not stop the digest"
+    assert texts[0]
+
+
+async def test_digest_delivered_when_news_unreachable():
+    """News API timeout must not block the digest."""
+    friend_id = _make_user(222)
+    chats, texts = await _drive_digest(
+        friend_id, news=TimeoutError("rss timeout"),
+    )
+    assert chats == [222]
+
+
+async def test_digest_delivered_when_birthday_client_explodes():
+    friend_id = _make_user(222)
+    chats, texts = await _drive_digest(
+        friend_id, birthdays=Exception("People API quota"),
+    )
+    assert chats == [222]
+
+
+async def test_digest_delivered_when_every_optional_integration_fails():
+    """Worst case: every optional source fails. Digest must still be sent."""
+    friend_id = _make_user(222)
+    chats, texts = await _drive_digest(
+        friend_id,
+        events=Exception("x"),
+        tasks=Exception("x"),
+        progress=Exception("x"),
+        emails=Exception("x"),
+        weather=Exception("x"),
+        news=Exception("x"),
+        birthdays=Exception("x"),
+        history=Exception("x"),
+        summaries=Exception("x"),
+        wa_chats=Exception("x"),
+        wa_summary=Exception("x"),
+    )
+    assert chats == [222], "digest must arrive even when every integration is down"
+
+
 async def test_digest_skipped_silently_for_user_not_in_db():
     """When target_user_id points to a row that no longer exists, fall back
     to legacy chat_id rather than crashing or leaking to wrong account."""

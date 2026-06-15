@@ -819,24 +819,58 @@ async def _send_morning_digest(
         except Exception as e:
             logger.warning("morning digest: user lookup for %s failed: %s", target_user_id, e)
 
+    def _safe(fn, default, *, label):
+        """Run a data-source fetch; if it explodes (revoked token, 404, RSS
+        timeout, …) log it and return `default` so the digest keeps going."""
+        try:
+            return fn()
+        except Exception as exc:
+            logger.warning("Morning digest: %s failed: %s", label, exc)
+            return default
+
     last_error = None
     for attempt in range(3):
         try:
-            events = calendar_client.get_todays_calendar_events(target_date, user_id=target_user_id)
-            short = calendar_client.get_active_tasks("short", target_date, user_id=target_user_id)
-            long_ = calendar_client.get_active_tasks("long", target_date, user_id=target_user_id)
-            yesterday = calendar_client.get_progress_before_date(target_date, user_id=target_user_id)
-            emails = gmail_client.get_unread_emails(user_id=target_user_id) if target_date is None else []
-            weather = weather_client.get_weather(target_date)
             tz = pytz.timezone(config.TIMEZONE)
             today = datetime.datetime.now(tz).date()
             is_today = target_date is None or target_date == today
-            news = news_client.get_news_headlines(max_per_source=5) if is_today else []
-            birthdays = birthday_client.get_todays_birthdays(user_id=target_user_id) if is_today else []
-            recent_msgs = conversation.get_history(user_id=target_user_id)
-            summaries = conversation.get_recent_summaries(user_id=target_user_id)
-            wa_unread = whatsapp_client.unread_chats(user_id=target_user_id) if is_today else []
-            wa_summary = whatsapp_summary.summarize_unread_chats(wa_unread) if wa_unread else ""
+
+            events = _safe(
+                lambda: calendar_client.get_todays_calendar_events(target_date, user_id=target_user_id),
+                [], label="events")
+            short = _safe(
+                lambda: calendar_client.get_active_tasks("short", target_date, user_id=target_user_id),
+                [], label="short tasks")
+            long_ = _safe(
+                lambda: calendar_client.get_active_tasks("long", target_date, user_id=target_user_id),
+                [], label="long tasks")
+            yesterday = _safe(
+                lambda: calendar_client.get_progress_before_date(target_date, user_id=target_user_id),
+                "", label="yesterday progress")
+            emails = _safe(
+                lambda: gmail_client.get_unread_emails(user_id=target_user_id) if target_date is None else [],
+                [], label="emails")
+            weather = _safe(
+                lambda: weather_client.get_weather(target_date), "", label="weather")
+            news = _safe(
+                lambda: news_client.get_news_headlines(max_per_source=5) if is_today else [],
+                [], label="news")
+            birthdays = _safe(
+                lambda: birthday_client.get_todays_birthdays(user_id=target_user_id) if is_today else [],
+                [], label="birthdays")
+            recent_msgs = _safe(
+                lambda: conversation.get_history(user_id=target_user_id), [], label="history")
+            summaries = _safe(
+                lambda: conversation.get_recent_summaries(user_id=target_user_id),
+                [], label="summaries")
+            wa_unread = _safe(
+                lambda: whatsapp_client.unread_chats(user_id=target_user_id) if is_today else [],
+                [], label="whatsapp unread")
+            wa_summary = ""
+            if wa_unread:
+                wa_summary = _safe(
+                    lambda: whatsapp_summary.summarize_unread_chats(wa_unread),
+                    "", label="whatsapp summary")
 
             text = digest_module.generate_morning_digest(
                 events, short, long_, yesterday, emails, target_date, weather,
