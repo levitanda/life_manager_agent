@@ -12,7 +12,10 @@ import google_auth
 
 logger = logging.getLogger(__name__)
 
-_calendar_ids: dict[str, str] = {}
+# Calendar id cache must be keyed by (user_id, name) — a global name→id map
+# leaked Daria's calendar ids to every other user and caused 404 Not Found
+# when their digest tried to fetch events from a calendar they don't own.
+_calendar_ids: dict[tuple[Optional[int], str], str] = {}
 
 
 def _get_service(user_id: Optional[int] = None):
@@ -20,19 +23,25 @@ def _get_service(user_id: Optional[int] = None):
 
 
 def _get_or_create_calendar(name: str, user_id: Optional[int] = None) -> str:
-    if name in _calendar_ids:
-        return _calendar_ids[name]
+    key = (user_id, name)
+    if key in _calendar_ids:
+        return _calendar_ids[key]
 
     svc = _get_service(user_id)
     calendars = svc.calendarList().list().execute().get("items", [])
     for cal in calendars:
         if cal["summary"] == name:
-            _calendar_ids[name] = cal["id"]
+            _calendar_ids[key] = cal["id"]
             return cal["id"]
 
     new_cal = svc.calendars().insert(body={"summary": name}).execute()
-    _calendar_ids[name] = new_cal["id"]
+    _calendar_ids[key] = new_cal["id"]
     return new_cal["id"]
+
+
+def _clear_calendar_id_cache() -> None:
+    """For tests: drop the cross-user calendar id cache."""
+    _calendar_ids.clear()
 
 
 def _today(tz: pytz.BaseTzInfo) -> datetime.date:
