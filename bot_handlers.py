@@ -277,6 +277,26 @@ async def handle_natural(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     except Exception as e:
         logger.warning("settings_menu capture failed: %s", e)
 
+    # Any DB-known user with access/promo gets through (Daria + paying users).
+    # If they're not in DB or their subscription lapsed, fall back to the
+    # legacy owner check so Daria's pre-migration flow keeps working even
+    # if her DB row is somehow missing.
+    try:
+        import access
+        user = access.get_user_from_update(update)
+        if user is not None:
+            if not user.has_access():
+                await update.effective_message.reply_text(
+                    "🔒 Подписка неактивна. Используй /promo КОД или /subscribe."
+                )
+                return
+            # Authorized DB user → process
+            await _process_natural(update.message.text, update, context)
+            return
+    except Exception as e:
+        logger.warning("access lookup failed: %s", e)
+
+    # Legacy fallback for Daria pre-migration
     if not _is_owner(update):
         return
     await _process_natural(update.message.text, update, context)
