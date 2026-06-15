@@ -72,6 +72,31 @@ def verify_state(token: str) -> dict:
     return data
 
 
+def _dashboard_serializer() -> URLSafeTimedSerializer:
+    """Separate salt so dashboard tokens can't be replayed as OAuth state."""
+    secret = os.environ.get("MASTER_KEY") or os.environ.get("STATE_SECRET") or "dev-secret"
+    return URLSafeTimedSerializer(secret, salt="dashboard-token-v1")
+
+
+# Dashboard tokens live longer than OAuth state (30 days) since users
+# may bookmark the URL.
+DASHBOARD_TOKEN_MAX_AGE = 60 * 60 * 24 * 30
+
+
+def sign_dashboard_token(user_id: int) -> str:
+    return _dashboard_serializer().dumps({"user_id": int(user_id), "purpose": "dashboard"})
+
+
+def verify_dashboard_token(token: str) -> int:
+    try:
+        data = _dashboard_serializer().loads(token, max_age=DASHBOARD_TOKEN_MAX_AGE)
+    except BadSignature as e:
+        raise HTTPException(status_code=400, detail=f"Invalid dashboard token: {e}")
+    if data.get("purpose") != "dashboard":
+        raise HTTPException(status_code=400, detail="Wrong token purpose")
+    return int(data["user_id"])
+
+
 # ─── App factory ──────────────────────────────────────────────────────────────
 
 
@@ -240,6 +265,24 @@ def create_app() -> FastAPI:
             "response": {"text": "Готово.", "end_session": False},
             "version": payload.get("version", "1.0"),
         })
+
+    @app.get("/dashboard/{user_id}")
+    async def dashboard_html(user_id: int, token: str) -> HTMLResponse:
+        """Per-user web dashboard. Token is signed via sign_dashboard_token
+        from inside the bot; URL is sent to the user as a button in their
+        /dashboard Telegram reply."""
+        verified_id = verify_dashboard_token(token)
+        if verified_id != user_id:
+            raise HTTPException(status_code=403, detail="token user mismatch")
+        try:
+            import dashboard as dash
+            return HTMLResponse(dash.render_html_dashboard(user_id))
+        except Exception as e:
+            logger.exception("dashboard render failed for user=%s: %s", user_id, e)
+            return HTMLResponse(
+                f"<html><body><h1>Dashboard error</h1><pre>{e}</pre></body></html>",
+                status_code=500,
+            )
 
     return app
 

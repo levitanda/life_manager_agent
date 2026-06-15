@@ -105,6 +105,23 @@ async def _authorize(update: Update):
     return None, None
 
 
+async def cmd_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show the user's dashboard — task counts, goals, streaks, today's calendar."""
+    user, user_id = await _authorize(update)
+    if user is None and user_id is None:
+        return
+    if user_id is None:
+        await update.message.reply_text("Дашборд доступен после миграции в базу. Открой /profile.")
+        return
+    try:
+        import dashboard as dash
+        text, keyboard = dash.build_telegram_dashboard(user_id)
+        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=keyboard)
+    except Exception as e:
+        logger.exception("dashboard build failed: %s", e)
+        await update.message.reply_text(f"⚠️ Не удалось построить дашборд: {e}")
+
+
 async def cmd_memory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user, user_id = await _authorize(update)
     if user is None and user_id is None:
@@ -1023,6 +1040,7 @@ def register_handlers(app: Application) -> None:
     # Existing handlers (still gated by _is_owner for legacy Daria-only access)
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("memory", cmd_memory))
+    app.add_handler(CommandHandler("dashboard", cmd_dashboard))
     app.add_handler(CommandHandler("add", cmd_add))
     app.add_handler(CommandHandler("tasks", cmd_tasks))
     app.add_handler(CommandHandler("done", cmd_done))

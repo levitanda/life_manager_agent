@@ -722,6 +722,114 @@ def diary_backfill(*, _user_id: Optional[int] = None, **_kwargs) -> dict:
     return _ok("\n".join(parts))
 
 
+# ─── Goals (long-term, first-class) ──────────────────────────────────────────
+
+def add_goal(
+    *,
+    title: str,
+    description: Optional[str] = None,
+    category: Optional[str] = None,
+    target_date: Optional[str] = None,
+    group_id: Optional[int] = None,
+    _user_id: Optional[int] = None,
+    **_kwargs,
+) -> dict:
+    """Persist a new long-term goal. Owner row is auto-added to
+    goal_collaborators by db.create_goal."""
+    if _user_id is None:
+        return _err("Цели поддерживаются только для зарегистрированных юзеров.")
+    if not title or not title.strip():
+        return _err("Нужно название цели.")
+    try:
+        td = datetime.date.fromisoformat(target_date) if target_date else None
+    except Exception:
+        td = None
+    try:
+        import db
+        with db.session_scope() as s:
+            g = db.create_goal(
+                s, user_id=_user_id, title=title.strip(),
+                description=description, category=category, target_date=td,
+                group_id=group_id,
+            )
+            gid = g.id
+        return _ok(f"🎯 Цель добавлена (id={gid}): {title.strip()}")
+    except Exception as e:
+        logger.exception("add_goal failed: %s", e)
+        return _err(f"Не удалось добавить цель: {e}")
+
+
+def record_goal_progress(
+    *,
+    goal: str,
+    note: Optional[str] = None,
+    pct: Optional[int] = None,
+    _user_id: Optional[int] = None,
+    **_kwargs,
+) -> dict:
+    """Record a progress entry against a goal. `goal` is either a numeric
+    id or a substring of the title."""
+    if _user_id is None:
+        return _err("Цели поддерживаются только для зарегистрированных юзеров.")
+    try:
+        import db
+        with db.session_scope() as s:
+            target = None
+            try:
+                target = s.get(db.Goal, int(goal))
+            except (TypeError, ValueError):
+                pass
+            if target is None:
+                target = (
+                    s.query(db.Goal)
+                    .filter(db.Goal.user_id == _user_id, db.Goal.title.ilike(f"%{goal}%"))
+                    .order_by(db.Goal.created_at.desc())
+                    .first()
+                )
+            if target is None:
+                return _err(f"Не нашёл цель «{goal}». Скажи «список целей».")
+            s.add(db.GoalProgress(
+                goal_id=target.id, user_id=_user_id, note=note,
+                pct=int(pct) if pct is not None else None,
+            ))
+            title = target.title
+        bar = f" — {pct}%" if pct is not None else ""
+        return _ok(f"✍️ Записал прогресс по «{title}»{bar}")
+    except Exception as e:
+        logger.exception("record_goal_progress failed: %s", e)
+        return _err(f"Не получилось записать: {e}")
+
+
+def list_goals(*, _user_id: Optional[int] = None, **_kwargs) -> dict:
+    """Return all active goals for the user (including shared via group)."""
+    if _user_id is None:
+        return _err("Цели поддерживаются только для зарегистрированных юзеров.")
+    try:
+        import db
+        with db.session_scope() as s:
+            group_ids = [r.group_id for r in s.query(db.GroupMember).filter_by(user_id=_user_id).all()]
+            from sqlalchemy import or_
+            q = s.query(db.Goal).filter(db.Goal.status == "active")
+            if group_ids:
+                q = q.filter(or_(db.Goal.user_id == _user_id, db.Goal.group_id.in_(group_ids)))
+            else:
+                q = q.filter(db.Goal.user_id == _user_id)
+            rows = [
+                {"id": g.id, "title": g.title, "shared": g.group_id is not None}
+                for g in q.order_by(db.Goal.created_at.desc()).all()
+            ]
+        if not rows:
+            return _ok("🎯 Целей пока нет. Скажи «добавь цель: …»")
+        lines = ["🎯 *Твои цели:*"]
+        for r in rows:
+            tag = " (общая)" if r["shared"] else ""
+            lines.append(f"  {r['id']}. {r['title']}{tag}")
+        return _ok("\n".join(lines))
+    except Exception as e:
+        logger.exception("list_goals failed: %s", e)
+        return _err(f"Не получилось получить список: {e}")
+
+
 # ─── Tool schema definitions for Anthropic API ───────────────────────────────
 
 TOOL_SCHEMAS = [
@@ -1153,6 +1261,49 @@ TOOL_SCHEMAS = [
             "required": ["subject", "body"],
         },
     },
+    {
+        "name": "add_goal",
+        "description": (
+            "Add a long-term goal (months-scale). Use when the user says "
+            "'добавь цель …', 'у меня цель …', 'добавь долгосрочную цель …'. "
+            "Goals are tracked separately from tasks and show up with a "
+            "progress bar in /dashboard and morning digest."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "description": {"type": "string"},
+                "category": {"type": "string", "description": "health|work|learning|family|finance|hobby"},
+                "target_date": {"type": "string", "description": "YYYY-MM-DD"},
+                "group_id": {"type": "integer", "description": "Make it a shared goal in the given group"},
+            },
+            "required": ["title"],
+        },
+    },
+    {
+        "name": "record_goal_progress",
+        "description": (
+            "Record a progress entry against an existing goal. Use when the "
+            "user says 'записал прогресс по X', 'продвинулся по итальянскому', "
+            "'сделал ещё одну тренировку на пути к цели'. The goal is found "
+            "by id or by title substring."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "goal": {"type": "string", "description": "Goal id (numeric) or substring of the title"},
+                "note": {"type": "string"},
+                "pct": {"type": "integer", "description": "Overall progress 0-100 (optional)"},
+            },
+            "required": ["goal"],
+        },
+    },
+    {
+        "name": "list_goals",
+        "description": "Show the user's active long-term goals.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
 ]
 
 
@@ -1191,4 +1342,7 @@ TOOL_FUNCS = {
     "diary_write": diary_write,
     "diary_read": diary_read,
     "diary_backfill": diary_backfill,
+    "add_goal": add_goal,
+    "record_goal_progress": record_goal_progress,
+    "list_goals": list_goals,
 }
