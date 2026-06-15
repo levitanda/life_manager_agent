@@ -52,8 +52,16 @@ def _load_personality(user_id: Optional[int] = None) -> dict:
         return {"name": "ассистент", "humor": 50, "warmth": 70, "terseness": 50, "honesty": 90, "proactivity": 50, "style_hints": []}
 
 
-def _build_system_prompt(persona: dict, active_tasks: list, summaries: list) -> str:
-    tz = pytz.timezone(config.TIMEZONE)
+def _build_system_prompt(
+    persona: dict,
+    active_tasks: list,
+    summaries: list,
+    *,
+    user_name: Optional[str] = None,
+    user_timezone: Optional[str] = None,
+) -> str:
+    tz_name = user_timezone or config.TIMEZONE
+    tz = pytz.timezone(tz_name)
     now = datetime.datetime.now(tz)
 
     dials = (
@@ -75,9 +83,15 @@ def _build_system_prompt(persona: dict, active_tasks: list, summaries: list) -> 
         lines = [f"[{s['date']}] {s['summary']}" for s in summaries[-5:]]
         summaries_block = "\n\nДолгосрочная память (резюме прошлых сессий):\n" + "\n\n".join(lines)
 
-    return f"""Ты — {persona.get('name', 'личный ассистент')} по имени Дарья.
+    persona_role = persona.get("name") or "личный ассистент"
+    user_block = (
+        f"Ты разговариваешь с человеком по имени {user_name}. "
+        f"Когда обращаешься — используй это имя."
+    ) if user_name else "Имя пользователя пока неизвестно."
 
-Сейчас {now.strftime('%Y-%m-%d %H:%M')}, часовой пояс {config.TIMEZONE}.
+    return f"""Ты — {persona_role}. {user_block}
+
+Сейчас {now.strftime('%Y-%m-%d %H:%M')}, часовой пояс {tz_name}.
 
 Личность: {dials}
 Стиль:
@@ -115,7 +129,23 @@ def run_agent(
     single-user behavior.
     """
     persona = _load_personality(user_id)
-    system = _build_system_prompt(persona, active_tasks or [], summaries or [])
+    # Per-user context for personalization (no Daria-by-default leaks).
+    user_name = None
+    user_timezone = None
+    if user_id is not None:
+        try:
+            import db
+            with db.session_scope() as s:
+                u = s.get(db.User, user_id)
+                if u is not None:
+                    user_name = u.display_name or None
+                    user_timezone = u.timezone or None
+        except Exception as e:
+            logger.warning("agent: user lookup for %s failed: %s", user_id, e)
+    system = _build_system_prompt(
+        persona, active_tasks or [], summaries or [],
+        user_name=user_name, user_timezone=user_timezone,
+    )
     messages = _build_messages(text, history)
 
     text_parts: list[str] = []

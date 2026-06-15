@@ -815,7 +815,13 @@ async def _send_morning_digest(
     or the agent, target_user_id=None falls back to legacy Daria-only
     behavior (env-based TELEGRAM_CHAT_ID, root-level files).
     """
+    # Resolve target user's chat_id, display_name, timezone, city in one DB
+    # lookup. These four pieces drive both the routing of the message AND
+    # the personalization of the prompt — no more Daria-by-default leaks.
     chat_id = config.TELEGRAM_CHAT_ID
+    user_name: Optional[str] = None
+    user_timezone = config.TIMEZONE
+    user_city: Optional[str] = None
     if target_user_id is not None:
         try:
             import db
@@ -823,9 +829,15 @@ async def _send_morning_digest(
                 u = s.get(db.User, target_user_id)
                 if u is not None:
                     chat_id = int(u.telegram_chat_id)
+                    user_name = u.display_name or None
+                    user_timezone = u.timezone or config.TIMEZONE
+                    user_city = getattr(u, "city", None)
         except Exception as e:
             logger.warning("morning digest: user lookup for %s failed: %s", target_user_id, e)
-    logger.info("morning digest: target_user_id=%s → chat_id=%s", target_user_id, chat_id)
+    logger.info(
+        "morning digest: target_user_id=%s chat_id=%s name=%s tz=%s city=%s",
+        target_user_id, chat_id, user_name, user_timezone, user_city,
+    )
 
     def _safe(fn, default, *, label):
         """Run a data-source fetch; if it explodes (revoked token, 404, RSS
@@ -839,7 +851,7 @@ async def _send_morning_digest(
     last_error = None
     for attempt in range(3):
         try:
-            tz = pytz.timezone(config.TIMEZONE)
+            tz = pytz.timezone(user_timezone)
             today = datetime.datetime.now(tz).date()
             is_today = target_date is None or target_date == today
 
@@ -859,9 +871,10 @@ async def _send_morning_digest(
                 lambda: gmail_client.get_unread_emails(user_id=target_user_id) if target_date is None else [],
                 [], label="emails")
             weather = _safe(
-                lambda: weather_client.get_weather(target_date), "", label="weather")
+                lambda: weather_client.get_weather(target_date, city=user_city),
+                "", label="weather")
             news = _safe(
-                lambda: news_client.get_news_headlines(max_per_source=5) if is_today else [],
+                lambda: news_client.get_news_headlines(max_per_source=5, user_id=target_user_id) if is_today else [],
                 [], label="news")
             birthdays = _safe(
                 lambda: birthday_client.get_todays_birthdays(user_id=target_user_id) if is_today else [],
@@ -877,7 +890,7 @@ async def _send_morning_digest(
             wa_summary = ""
             if wa_unread:
                 wa_summary = _safe(
-                    lambda: whatsapp_summary.summarize_unread_chats(wa_unread),
+                    lambda: whatsapp_summary.summarize_unread_chats(wa_unread, user_id=target_user_id),
                     "", label="whatsapp summary")
 
             text = digest_module.generate_morning_digest(
@@ -886,6 +899,8 @@ async def _send_morning_digest(
                 recent_messages=recent_msgs or None,
                 summaries=summaries or None,
                 whatsapp_summary=wa_summary or None,
+                user_name=user_name,
+                user_timezone=user_timezone,
             )
 
             # Alice cache is still single-user; only write when sending to Daria.

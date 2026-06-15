@@ -39,7 +39,8 @@ def test_get_news_headlines_source_names():
     with patch("requests.get", return_value=_mock_response()):
         results = news_client.get_news_headlines(max_per_source=1)
     sources = {r["source"] for r in results}
-    assert sources == set(news_client.NEWS_FEEDS.keys())
+    # Legacy mode (no user_id) walks the legacy global feed list
+    assert sources == set(news_client.LEGACY_NEWS_FEEDS.keys())
 
 
 def test_get_news_headlines_respects_max():

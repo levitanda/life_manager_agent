@@ -11,8 +11,6 @@ logger = logging.getLogger(__name__)
 _FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 _GEO_URL = "https://geocoding-api.open-meteo.com/v1/search"
 
-_DEFAULT_LAT = 32.77  # Nesher
-_DEFAULT_LON = 35.05
 
 def _geocode(city: str) -> tuple[float, float] | None:
     try:
@@ -38,16 +36,20 @@ _WMO = {
 
 
 def get_weather(target_date: Optional[datetime.date] = None, city: Optional[str] = None) -> Optional[str]:
-    """Return a one-line weather summary. city defaults to Nesher."""
+    """Return a one-line weather summary for the given city.
+
+    `city` is required. If None or empty, returns None — callers must pass
+    the user's stored city. There is intentionally no default location:
+    the previous «Нешер» default leaked Daria's hometown weather to every
+    other user.
+    """
     try:
-        if city:
-            coords = _geocode(city)
-            if not coords:
-                return f"Не удалось найти город «{city}»"
-            lat, lon = coords
-        else:
-            lat, lon = _DEFAULT_LAT, _DEFAULT_LON
-            city = "Нешер"
+        if not city:
+            return None
+        coords = _geocode(city)
+        if not coords:
+            return f"Не удалось найти город «{city}»"
+        lat, lon = coords
 
         params = {
             "latitude": lat,
