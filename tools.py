@@ -272,10 +272,21 @@ def show_tasks(*, _active_tasks=None, _user_id: Optional[int] = None, **_kwargs)
 
 # ─── send_to_alice ───────────────────────────────────────────────────────────
 
+def _alice_pending_path(user_id: Optional[int]) -> str:
+    """Per-user pending Alice message file. Legacy single-user path when user_id is None."""
+    if user_id is None:
+        return config.ALICE_MESSAGE_FILE
+    import db
+    from pathlib import Path
+    base = Path(db.data_dir(), "users", str(user_id))
+    base.mkdir(parents=True, exist_ok=True)
+    return str(base / "pending_alice_message.txt")
+
+
 def send_to_alice(*, message: str, _user_id: Optional[int] = None, **_kwargs) -> dict:
     if not message:
         return _err("Не понял, что передать Алисе.")
-    with open(config.ALICE_MESSAGE_FILE, "w", encoding="utf-8") as f:
+    with open(_alice_pending_path(_user_id), "w", encoding="utf-8") as f:
         f.write(message)
     return _ok("📢 Сообщение поставлено в очередь для Алисы.")
 

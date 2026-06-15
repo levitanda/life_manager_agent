@@ -56,10 +56,43 @@ def _resolve_user_id(update: Update) -> int | None:
         return None
 
 
+async def _authorize(update: Update):
+    """Multi-user gate. Returns (user, user_id) for the authorized caller, or
+    (None, None) if access denied (caller is then silently dropped — never
+    spam strangers who poked the bot).
+
+    Access rules:
+      - DB user with subscription_status in ('active','promo')  → authorized
+      - DB user with no access  → polite reply, deny
+      - Not in DB AND matches legacy TELEGRAM_CHAT_ID env  → authorized as
+        Daria, user_id may be None (pre-migration) or her DB id
+      - Not in DB AND not Daria  → silent deny
+    """
+    try:
+        import access
+        user = access.get_user_from_update(update)
+        if user is not None:
+            if user.has_access():
+                return user, user.id
+            try:
+                await update.effective_message.reply_text(
+                    "🔒 Подписка неактивна. Используй /promo КОД или /subscribe."
+                )
+            except Exception:
+                pass
+            return None, None
+    except Exception as e:
+        logger.warning("access lookup failed: %s", e)
+    # Legacy fallback for Daria pre-migration
+    if _is_owner(update):
+        return None, _resolve_user_id(update)  # user_id may still be None
+    return None, None
+
+
 async def cmd_memory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _is_owner(update):
+    user, user_id = await _authorize(update)
+    if user is None and user_id is None:
         return
-    user_id = _resolve_user_id(update)
     summaries = conversation.get_recent_summaries(10, user_id=user_id)
     if not summaries:
         await update.message.reply_text("Пока нет сохранённых резюме сессий.")
@@ -72,7 +105,8 @@ async def cmd_memory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Inline help for already-onboarded users. /start is handled by onboarding."""
-    if not _is_owner(update):
+    user, user_id = await _authorize(update)
+    if user is None and user_id is None:
         return
     await update.message.reply_text(
         "Привет! Я твой личный агент. Просто пиши мне что нужно сделать — я пойму.\n\n"
@@ -88,10 +122,10 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _is_owner(update):
+    user, user_id = await _authorize(update)
+    if user is None and user_id is None:
         return
 
-    user_id = _resolve_user_id(update)
     args = context.args
     if not args or len(args) < 2:
         await update.message.reply_text(
@@ -169,10 +203,10 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _is_owner(update):
+    user, user_id = await _authorize(update)
+    if user is None and user_id is None:
         return
 
-    user_id = _resolve_user_id(update)
     short = calendar_client.get_active_tasks("short", user_id=user_id)
     long_ = calendar_client.get_active_tasks("long", user_id=user_id)
 
@@ -204,10 +238,9 @@ async def cmd_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _is_owner(update):
+    user, user_id = await _authorize(update)
+    if user is None and user_id is None:
         return
-
-    user_id = _resolve_user_id(update)
 
     if not context.args:
         await update.message.reply_text("Использование: /done <номер задачи>")
@@ -233,14 +266,16 @@ async def cmd_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_digest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _is_owner(update):
+    user, user_id = await _authorize(update)
+    if user is None and user_id is None:
         return
     await update.message.reply_text("⏳ Генерирую дайджест...")
-    await _send_morning_digest(context.application, target_date=None)
+    await _send_morning_digest(context.application, target_date=None, target_user_id=user_id)
 
 
 async def cmd_progress_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    if not _is_owner(update):
+    user, user_id = await _authorize(update)
+    if user is None and user_id is None:
         return ConversationHandler.END
     await update.message.reply_text(
         "Расскажи о прогрессе за сегодня — что сделано, что перенесено, какие мысли."
@@ -249,9 +284,9 @@ async def cmd_progress_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def cmd_progress_receive(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    if not _is_owner(update):
+    user, user_id = await _authorize(update)
+    if user is None and user_id is None:
         return ConversationHandler.END
-    user_id = _resolve_user_id(update)
     text = update.message.text
     calendar_client.save_progress(text, user_id=user_id)
     await update.message.reply_text("✍️ Прогресс сохранён. Учту завтра утром!")
@@ -522,7 +557,8 @@ async def _execute_action(
     elif intent == "send_to_alice":
         message = action.get("reply") or action.get("title") or ""
         if message:
-            with open(config.ALICE_MESSAGE_FILE, "w", encoding="utf-8") as f:
+            import tools as _tools
+            with open(_tools._alice_pending_path(user_id), "w", encoding="utf-8") as f:
                 f.write(message)
             response_text = f"📢 Сообщение поставлено в очередь. Скажи «Алиса, открой [название навыка]» — она прочитает его вслух."
         else:
@@ -672,9 +708,11 @@ async def _show_email_preview(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 async def callback_email(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user, user_id = await _authorize(update)
+    if user is None and user_id is None:
+        return
     query = update.callback_query
     await query.answer()
-    user_id = _resolve_user_id(update)
     data = context.user_data.pop("pending_email", {})
 
     if query.data == "email_confirm":
@@ -692,9 +730,11 @@ async def callback_email(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def callback_conflict(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user, user_id = await _authorize(update)
+    if user is None and user_id is None:
+        return
     query = update.callback_query
     await query.answer()
-    user_id = _resolve_user_id(update)
     data = context.user_data.pop("pending_task", {})
 
     if query.data == "conflict_confirm" and data:
@@ -813,9 +853,8 @@ async def _send_morning_digest(
 
             for chunk in _split_message(text):
                 await app.bot.send_message(chat_id=chat_id, text=chunk)
-            # Pushover stays Daria-only for now; per-user push is Phase 7+.
-            if target_user_id is None:
-                pushover_client.send_push(text[:1024], title="☀️ Доброе утро!")
+            # Per-user pushover (silently no-op if user hasn't configured it).
+            pushover_client.send_push(text[:1024], title="☀️ Доброе утро!", user_id=target_user_id)
             if is_today:
                 conversation.add("(утренний дайджест)", text, user_id=target_user_id)
             return
@@ -835,7 +874,8 @@ async def _send_morning_digest(
 
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _is_owner(update):
+    user, user_id = await _authorize(update)
+    if user is None and user_id is None:
         return
 
     if not config.OPENAI_API_KEY:
