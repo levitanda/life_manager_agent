@@ -75,16 +75,11 @@ async def _heartbeat(app: Application) -> None:
         if now_local == user["morning_time"]:
             try:
                 await bot_handlers._send_morning_digest(app, target_user_id=user["id"])
-            except TypeError:
-                # Phase 1 _send_morning_digest still single-user — fall back
-                await bot_handlers._send_morning_digest(app)
             except Exception as e:
                 logger.exception("morning digest failed for user=%s: %s", user["id"], e)
         if now_local == user["evening_time"]:
             try:
                 await bot_handlers._send_evening_checkin(app, target_user_id=user["id"])
-            except TypeError:
-                await bot_handlers._send_evening_checkin(app)
             except Exception as e:
                 logger.exception("evening check-in failed for user=%s: %s", user["id"], e)
         if now_local == "23:30":

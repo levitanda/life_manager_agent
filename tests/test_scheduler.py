@@ -145,26 +145,30 @@ async def test_heartbeat_skips_users_not_matching_time():
 
 
 @pytest.mark.asyncio
-async def test_heartbeat_falls_back_when_legacy_signature():
-    """If _send_morning_digest still has only (app) signature, heartbeat should
-    catch the TypeError and call without target_user_id."""
-    _add_active(100, tz="Asia/Jerusalem", morning="06:30")
+async def test_heartbeat_logs_and_keeps_going_when_handler_errors():
+    """If a handler raises an unexpected exception, the heartbeat catches it
+    so one user's failure does not stop dispatch for the rest of the loop."""
+    a = _add_active(100, tz="Asia/Jerusalem", morning="06:30")
+    b = _add_active(200, tz="Asia/Jerusalem", morning="06:30")
     import scheduler
-    legacy_calls = []
-    async def legacy(a):  # no target_user_id kwarg accepted
-        legacy_calls.append("called")
-    async def evening_legacy(a):
+    seen = []
+    async def flaky(app, target_user_id=None):
+        seen.append(target_user_id)
+        if target_user_id == a:
+            raise RuntimeError("boom")
+    async def evening_noop(app, target_user_id=None):
         pass
 
     fake_now = datetime.datetime(2026, 6, 14, 3, 30, tzinfo=datetime.timezone.utc)
-    with patch("bot_handlers._send_morning_digest", side_effect=legacy), \
-         patch("bot_handlers._send_evening_checkin", side_effect=evening_legacy), \
+    with patch("bot_handlers._send_morning_digest", side_effect=flaky), \
+         patch("bot_handlers._send_evening_checkin", side_effect=evening_noop), \
          patch("scheduler.datetime") as fake_dt:
         fake_dt.datetime.now.return_value = fake_now
         fake_dt.timezone = datetime.timezone
         await scheduler._heartbeat(MagicMock())
 
-    assert legacy_calls == ["called"]
+    # both users were attempted despite the first one raising
+    assert seen == [a, b] or seen == [b, a]
 
 
 # ─── setup_scheduler chooses correct mode ────────────────────────────────────

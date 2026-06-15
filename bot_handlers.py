@@ -735,25 +735,47 @@ async def _reply_split(update: Update, text: str) -> None:
         await update.message.reply_text(chunk)
 
 
-async def _send_morning_digest(app: Application, target_date: datetime.date | None = None) -> None:
-    # Phase 1: scheduler-triggered, Daria-only (user_id=None preserves legacy paths).
+async def _send_morning_digest(
+    app: Application,
+    target_date: datetime.date | None = None,
+    *,
+    target_user_id: int | None = None,
+) -> None:
+    """Generate and send the morning digest.
+
+    When called from the multi-user heartbeat, target_user_id identifies
+    whose digest to build and where to send it. When called from /digest
+    or the agent, target_user_id=None falls back to legacy Daria-only
+    behavior (env-based TELEGRAM_CHAT_ID, root-level files).
+    """
+    chat_id = config.TELEGRAM_CHAT_ID
+    if target_user_id is not None:
+        try:
+            import db
+            with db.session_scope() as s:
+                u = s.get(db.User, target_user_id)
+                if u is not None:
+                    chat_id = int(u.telegram_chat_id)
+        except Exception as e:
+            logger.warning("morning digest: user lookup for %s failed: %s", target_user_id, e)
+
     last_error = None
     for attempt in range(3):
         try:
-            events = calendar_client.get_todays_calendar_events(target_date, user_id=None)
-            short = calendar_client.get_active_tasks("short", target_date, user_id=None)
-            long_ = calendar_client.get_active_tasks("long", target_date, user_id=None)
-            yesterday = calendar_client.get_progress_before_date(target_date, user_id=None)
-            emails = gmail_client.get_unread_emails(user_id=None) if target_date is None else []
+            events = calendar_client.get_todays_calendar_events(target_date, user_id=target_user_id)
+            short = calendar_client.get_active_tasks("short", target_date, user_id=target_user_id)
+            long_ = calendar_client.get_active_tasks("long", target_date, user_id=target_user_id)
+            yesterday = calendar_client.get_progress_before_date(target_date, user_id=target_user_id)
+            emails = gmail_client.get_unread_emails(user_id=target_user_id) if target_date is None else []
             weather = weather_client.get_weather(target_date)
             tz = pytz.timezone(config.TIMEZONE)
             today = datetime.datetime.now(tz).date()
             is_today = target_date is None or target_date == today
             news = news_client.get_news_headlines(max_per_source=5) if is_today else []
-            birthdays = birthday_client.get_todays_birthdays(user_id=None) if is_today else []
-            recent_msgs = conversation.get_history(user_id=None)
-            summaries = conversation.get_recent_summaries(user_id=None)
-            wa_unread = whatsapp_client.unread_chats(user_id=None) if is_today else []
+            birthdays = birthday_client.get_todays_birthdays(user_id=target_user_id) if is_today else []
+            recent_msgs = conversation.get_history(user_id=target_user_id)
+            summaries = conversation.get_recent_summaries(user_id=target_user_id)
+            wa_unread = whatsapp_client.unread_chats(user_id=target_user_id) if is_today else []
             wa_summary = whatsapp_summary.summarize_unread_chats(wa_unread) if wa_unread else ""
 
             text = digest_module.generate_morning_digest(
@@ -764,15 +786,18 @@ async def _send_morning_digest(app: Application, target_date: datetime.date | No
                 whatsapp_summary=wa_summary or None,
             )
 
-            with open(config.ALICE_DIGEST_FILE, "w", encoding="utf-8") as f:
-                f.write(text)
+            # Alice cache is still single-user; only write when sending to Daria.
+            if target_user_id is None or chat_id == config.TELEGRAM_CHAT_ID:
+                with open(config.ALICE_DIGEST_FILE, "w", encoding="utf-8") as f:
+                    f.write(text)
 
             for chunk in _split_message(text):
-                await app.bot.send_message(chat_id=config.TELEGRAM_CHAT_ID, text=chunk)
-            pushover_client.send_push(text[:1024], title="☀️ Доброе утро!")
-            # Add digest to conversation history so today's chat continues from it
+                await app.bot.send_message(chat_id=chat_id, text=chunk)
+            # Pushover stays Daria-only for now; per-user push is Phase 7+.
+            if target_user_id is None:
+                pushover_client.send_push(text[:1024], title="☀️ Доброе утро!")
             if is_today:
-                conversation.add("(утренний дайджест)", text, user_id=None)
+                conversation.add("(утренний дайджест)", text, user_id=target_user_id)
             return
         except Exception as e:
             last_error = e
@@ -780,10 +805,13 @@ async def _send_morning_digest(app: Application, target_date: datetime.date | No
             await asyncio.sleep(10)
 
     logger.error("Morning digest failed after 3 attempts: %s", last_error)
-    await app.bot.send_message(
-        chat_id=config.TELEGRAM_CHAT_ID,
-        text=f"⚠️ Ошибка генерации дайджеста: {last_error}",
-    )
+    try:
+        await app.bot.send_message(
+            chat_id=chat_id,
+            text=f"⚠️ Ошибка генерации дайджеста: {last_error}",
+        )
+    except Exception:
+        pass
 
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -815,10 +843,20 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await _process_natural(text, update, context)
 
 
-async def _send_evening_checkin(app: Application) -> None:
+async def _send_evening_checkin(app: Application, *, target_user_id: int | None = None) -> None:
+    chat_id = config.TELEGRAM_CHAT_ID
+    if target_user_id is not None:
+        try:
+            import db
+            with db.session_scope() as s:
+                u = s.get(db.User, target_user_id)
+                if u is not None:
+                    chat_id = int(u.telegram_chat_id)
+        except Exception as e:
+            logger.warning("evening check-in: user lookup for %s failed: %s", target_user_id, e)
     try:
         text = digest_module.generate_evening_checkin()
-        await app.bot.send_message(chat_id=config.TELEGRAM_CHAT_ID, text=text)
+        await app.bot.send_message(chat_id=chat_id, text=text)
     except Exception as e:
         logger.error("Evening check-in failed: %s", e)
 
