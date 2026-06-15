@@ -20,11 +20,13 @@ from typing import Iterator, Optional
 from sqlalchemy import (
     BigInteger,
     Column,
+    Date,
     DateTime,
     ForeignKey,
     Integer,
     LargeBinary,
     String,
+    Text,
     UniqueConstraint,
     create_engine,
 )
@@ -137,6 +139,11 @@ class User(Base):
     created_at: datetime.datetime = Column(
         DateTime, default=datetime.datetime.utcnow, nullable=False
     )
+    # ─── Personalization (Phase C) ──────────────────────────────────────────
+    city: Optional[str] = Column(Text)
+    language: str = Column(Text, default="ru")
+    news_country: Optional[str] = Column(Text)
+    onboarding_state: str = Column(Text, default="pending")
 
     google_token = relationship(
         "GoogleToken", uselist=False, cascade="all, delete-orphan", backref="user"
@@ -210,6 +217,104 @@ class PromoCode(Base):
     max_redemptions: Optional[int] = Column(Integer)
 
 
+# ─── Phase C: personalization, goals, groups ────────────────────────────────
+
+
+class UserNewsFeed(Base):
+    __tablename__ = "user_news_feeds"
+
+    id: int = Column(Integer, primary_key=True)
+    user_id: int = Column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    source_name: str = Column(Text, nullable=False)
+    url: str = Column(Text, nullable=False)
+    enabled: int = Column(Integer, default=1, nullable=False)
+    created_at: datetime.datetime = Column(
+        DateTime, default=datetime.datetime.utcnow
+    )
+
+
+# Groups must be declared before Goals (Goal.group_id → groups.id).
+class Group(Base):
+    __tablename__ = "groups"
+
+    id: int = Column(Integer, primary_key=True)
+    name: str = Column(Text, nullable=False)
+    created_by: Optional[int] = Column(Integer, ForeignKey("users.id"))
+    created_at: datetime.datetime = Column(
+        DateTime, default=datetime.datetime.utcnow
+    )
+
+
+class GroupMember(Base):
+    __tablename__ = "group_members"
+
+    group_id: int = Column(
+        Integer, ForeignKey("groups.id", ondelete="CASCADE"), primary_key=True
+    )
+    user_id: int = Column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    role: str = Column(Text, default="member", nullable=False)  # 'admin' | 'member'
+    joined_at: datetime.datetime = Column(
+        DateTime, default=datetime.datetime.utcnow
+    )
+
+
+class Goal(Base):
+    __tablename__ = "goals"
+
+    id: int = Column(Integer, primary_key=True)
+    user_id: int = Column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    group_id: Optional[int] = Column(Integer, ForeignKey("groups.id"), index=True)
+    title: str = Column(Text, nullable=False)
+    description: Optional[str] = Column(Text)
+    category: Optional[str] = Column(Text)
+    target_date: Optional[datetime.date] = Column(Date)
+    created_at: datetime.datetime = Column(
+        DateTime, default=datetime.datetime.utcnow
+    )
+    completed_at: Optional[datetime.datetime] = Column(DateTime)
+    status: str = Column(Text, default="active")
+
+
+class GoalProgress(Base):
+    __tablename__ = "goal_progress"
+
+    id: int = Column(Integer, primary_key=True)
+    goal_id: int = Column(
+        Integer, ForeignKey("goals.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: int = Column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    ts: datetime.datetime = Column(
+        DateTime, default=datetime.datetime.utcnow
+    )
+    note: Optional[str] = Column(Text)
+    pct: Optional[int] = Column(Integer)
+
+
+class GoalCollaborator(Base):
+    __tablename__ = "goal_collaborators"
+
+    goal_id: int = Column(
+        Integer, ForeignKey("goals.id", ondelete="CASCADE"), primary_key=True
+    )
+    user_id: int = Column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    role: str = Column(Text, nullable=False)  # 'owner' | 'collaborator' | 'viewer'
+    invited_by: Optional[int] = Column(Integer, ForeignKey("users.id"))
+    invited_at: datetime.datetime = Column(
+        DateTime, default=datetime.datetime.utcnow
+    )
+    accepted_at: Optional[datetime.datetime] = Column(DateTime)
+
+
 # ─── Convenience accessors ───────────────────────────────────────────────────
 
 
@@ -237,6 +342,48 @@ def create_user(
     session.add(user)
     session.flush()
     return user
+
+
+def create_goal(
+    session: Session,
+    user_id: int,
+    title: str,
+    *,
+    description: Optional[str] = None,
+    category: Optional[str] = None,
+    target_date: Optional[datetime.date] = None,
+    group_id: Optional[int] = None,
+) -> Goal:
+    """Create a goal and the implicit owner row in goal_collaborators."""
+    goal = Goal(
+        user_id=user_id,
+        title=title,
+        description=description,
+        category=category,
+        target_date=target_date,
+        group_id=group_id,
+    )
+    session.add(goal)
+    session.flush()
+    session.add(GoalCollaborator(
+        goal_id=goal.id,
+        user_id=user_id,
+        role="owner",
+        invited_by=user_id,
+        accepted_at=datetime.datetime.utcnow(),
+    ))
+    session.flush()
+    return goal
+
+
+def create_group(session: Session, name: str, creator_id: int) -> Group:
+    """Create a group and add the creator as admin member."""
+    group = Group(name=name, created_by=creator_id)
+    session.add(group)
+    session.flush()
+    session.add(GroupMember(group_id=group.id, user_id=creator_id, role="admin"))
+    session.flush()
+    return group
 
 
 def redeem_promo(session: Session, user: User, code: str) -> tuple[bool, str]:

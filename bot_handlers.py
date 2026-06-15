@@ -56,6 +56,22 @@ def _resolve_user_id(update: Update) -> int | None:
         return None
 
 
+def _user_tz(user_id: int | None):
+    """Resolve the timezone (pytz) for a user. Falls back to config.TIMEZONE
+    when user_id is None (legacy single-user path) or DB lookup fails."""
+    if user_id is None:
+        return pytz.timezone(config.TIMEZONE)
+    try:
+        import db
+        with db.session_scope() as s:
+            u = s.get(db.User, user_id)
+            if u and u.timezone:
+                return pytz.timezone(u.timezone)
+    except Exception:
+        pass
+    return pytz.timezone(config.TIMEZONE)
+
+
 async def _authorize(update: Update):
     """Multi-user gate. Returns (user, user_id) for the authorized caller, or
     (None, None) if access denied (caller is then silently dropped — never
@@ -151,7 +167,7 @@ async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         time_str = parsed.get("time")
         duration_minutes = int(parsed.get("duration_minutes") or 60)
 
-        tz = pytz.timezone(config.TIMEZONE)
+        tz = _user_tz(user_id)
         start_dt = None
         due_date = None
         end_date = None
@@ -433,7 +449,7 @@ async def _handle_agent_result(
                     pass
             await _send_morning_digest(context.application, target_date, target_user_id=user_id)
         elif kind == "send_weekly_digest":
-            tz = pytz.timezone(config.TIMEZONE)
+            tz = _user_tz(user_id)
             today = datetime.datetime.now(tz).date()
             monday = today - datetime.timedelta(days=today.weekday())
             sunday = monday + datetime.timedelta(days=6)
@@ -467,7 +483,7 @@ async def _execute_action(
         end_date_str = action.get("end_date")
         duration_minutes = int(action.get("duration_minutes") or 60)
 
-        tz = pytz.timezone(config.TIMEZONE)
+        tz = _user_tz(user_id)
         start_dt = None
         due_date = None
         end_date = None
@@ -624,7 +640,7 @@ async def _execute_action(
             await update.message.reply_text(response_text)
             return response_text
 
-        tz = pytz.timezone(config.TIMEZONE)
+        tz = _user_tz(user_id)
         base = datetime.date.fromisoformat(date_str) if date_str else datetime.datetime.now(tz).date()
         h, m = map(int, time_str.split(":"))
         new_start = tz.localize(datetime.datetime(base.year, base.month, base.day, h, m))
@@ -642,7 +658,7 @@ async def _execute_action(
     elif intent == "find_free_time":
         date_str = action.get("date")
         duration_minutes = int(action.get("duration_minutes") or 60)
-        tz = pytz.timezone(config.TIMEZONE)
+        tz = _user_tz(user_id)
         target_date = datetime.date.fromisoformat(date_str) if date_str else datetime.datetime.now(tz).date()
         try:
             slots = calendar_client.find_free_slots(target_date, duration_minutes, user_id=user_id)
@@ -658,7 +674,7 @@ async def _execute_action(
         return response_text
 
     elif intent == "get_weekly_digest":
-        tz = pytz.timezone(config.TIMEZONE)
+        tz = _user_tz(user_id)
         today = datetime.datetime.now(tz).date()
         # Start from Monday of current week
         monday = today - datetime.timedelta(days=today.weekday())

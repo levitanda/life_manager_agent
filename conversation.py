@@ -55,6 +55,22 @@ def _summaries_path(user_id: Optional[int]) -> str:
     return str(_user_dir(user_id) / _SUMMARIES_BASENAME)
 
 
+def _user_tz(user_id: Optional[int]):
+    """Resolve the timezone for a user. Falls back to config.TIMEZONE when
+    user_id is None (legacy single-user path) or the DB lookup fails."""
+    if user_id is None:
+        return pytz.timezone(config.TIMEZONE)
+    try:
+        import db
+        with db.session_scope() as s:
+            u = s.get(db.User, user_id)
+            if u and u.timezone:
+                return pytz.timezone(u.timezone)
+    except Exception:
+        pass
+    return pytz.timezone(config.TIMEZONE)
+
+
 # ── Raw session history ────────────────────────────────────────────────────────
 
 
@@ -71,8 +87,8 @@ def _save(data: dict, user_id: Optional[int] = None) -> None:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
-def _is_stale(last_ts: str) -> bool:
-    tz = pytz.timezone(config.TIMEZONE)
+def _is_stale(last_ts: str, user_id: Optional[int] = None) -> bool:
+    tz = _user_tz(user_id)
     last = datetime.datetime.fromisoformat(last_ts)
     if not last.tzinfo:
         last = tz.localize(last)
@@ -86,7 +102,7 @@ def get_history(user_id: Optional[int] = None) -> list[dict]:
     msgs = entry.get("messages", [])
     last_ts = entry.get("last_ts")
 
-    if last_ts and msgs and _is_stale(last_ts):
+    if last_ts and msgs and _is_stale(last_ts, user_id=user_id):
         _summarize_and_save(msgs, last_ts, user_id=user_id)
         _save({}, user_id)
         return []
@@ -101,7 +117,7 @@ def add(user_msg: str, assistant_msg: str, user_id: Optional[int] = None) -> Non
     msgs.append({"role": "user", "content": user_msg})
     msgs.append({"role": "assistant", "content": assistant_msg[:600]})
     entry["messages"] = msgs[-_MAX_MESSAGES:]
-    tz = pytz.timezone(config.TIMEZONE)
+    tz = _user_tz(user_id)
     entry["last_ts"] = datetime.datetime.now(tz).isoformat()
     data["session"] = entry
     _save(data, user_id)
@@ -157,10 +173,12 @@ def _summarize_and_save(
         summary_text = f"Сессия без резюме (ошибка: {e})"
 
     try:
-        tz = pytz.timezone(config.TIMEZONE)
+        tz = _user_tz(user_id)
         dt = datetime.datetime.fromisoformat(session_ts)
         if not dt.tzinfo:
             dt = tz.localize(dt)
+        else:
+            dt = dt.astimezone(tz)
         date_str = dt.strftime("%Y-%m-%d %H:%M")
     except Exception:
         date_str = session_ts[:16]

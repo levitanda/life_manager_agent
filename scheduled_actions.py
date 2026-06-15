@@ -61,6 +61,38 @@ def _all_user_ids_with_actions() -> list[Optional[int]]:
     return out
 
 
+def _user_tz(user_id: Optional[int]):
+    """Resolve the timezone (pytz) for a user. Falls back to config.TIMEZONE
+    when user_id is None or DB lookup fails."""
+    if user_id is None:
+        return pytz.timezone(config.TIMEZONE)
+    try:
+        import db
+        with db.session_scope() as s:
+            u = s.get(db.User, user_id)
+            if u and u.timezone:
+                return pytz.timezone(u.timezone)
+    except Exception:
+        pass
+    return pytz.timezone(config.TIMEZONE)
+
+
+def _user_tz_name(user_id: Optional[int]) -> str:
+    """Return the user's timezone *name* (string) for apscheduler cron, which
+    needs a string. Falls back to config.TIMEZONE."""
+    if user_id is None:
+        return config.TIMEZONE
+    try:
+        import db
+        with db.session_scope() as s:
+            u = s.get(db.User, user_id)
+            if u and u.timezone:
+                return u.timezone
+    except Exception:
+        pass
+    return config.TIMEZONE
+
+
 def _telegram_chat_id_for(user_id: Optional[int]) -> int:
     if user_id is None:
         return int(config.TELEGRAM_CHAT_ID)
@@ -107,7 +139,7 @@ def _restore_persisted_jobs(user_id: Optional[int] = None) -> int:
     actions = _load_store(user_id)
     if not actions:
         return 0
-    tz = pytz.timezone(config.TIMEZONE)
+    tz = _user_tz(user_id)
     now = datetime.datetime.now(tz)
     restored = 0
     expired_ids = []
@@ -146,7 +178,7 @@ def _add_date_job(action: dict) -> None:
 def _add_cron_job(action: dict) -> None:
     repeat = action["repeat"]
     h, m = map(int, action["at_time"].split(":"))
-    kwargs = {"hour": h, "minute": m, "timezone": config.TIMEZONE}
+    kwargs = {"hour": h, "minute": m, "timezone": _user_tz_name(action.get("user_id"))}
     if repeat == "weekdays":
         kwargs["day_of_week"] = "mon-fri"
     elif repeat == "weekend":
@@ -200,7 +232,7 @@ def schedule_action(
     user_id: Optional[int] = None,
 ) -> dict:
     """Schedule a new action. Returns the created action dict."""
-    tz = pytz.timezone(config.TIMEZONE)
+    tz = _user_tz(user_id)
     if run_at.tzinfo is None:
         run_at = tz.localize(run_at)
 
