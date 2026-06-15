@@ -398,6 +398,13 @@ async def _handle_agent_result(
     """Render agent.run_agent output: send text, then execute any side-effect actions."""
     text_out = result.get("text", "").strip()
     actions = result.get("actions", []) or []
+    logger.info(
+        "_handle_agent_result: user_id=%s effective_user=%s effective_chat=%s actions=%s",
+        user_id,
+        update.effective_user.id if update.effective_user else None,
+        update.effective_chat.id if update.effective_chat else None,
+        [a.get("action") for a in actions],
+    )
 
     needs_confirmation = next((a for a in actions if a.get("action") == "needs_confirmation"), None)
 
@@ -818,6 +825,7 @@ async def _send_morning_digest(
                     chat_id = int(u.telegram_chat_id)
         except Exception as e:
             logger.warning("morning digest: user lookup for %s failed: %s", target_user_id, e)
+    logger.info("morning digest: target_user_id=%s → chat_id=%s", target_user_id, chat_id)
 
     def _safe(fn, default, *, label):
         """Run a data-source fetch; if it explodes (revoked token, 404, RSS
