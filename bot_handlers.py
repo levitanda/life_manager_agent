@@ -3,6 +3,7 @@
 import datetime
 import logging
 import tempfile
+from typing import Optional
 
 import pytz
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -103,6 +104,75 @@ async def _authorize(update: Update):
     if _is_owner(update):
         return None, _resolve_user_id(update)  # user_id may still be None
     return None, None
+
+
+def deactivate_and_cleanup(user_id: int, reason: str) -> None:
+    """Flip a user to inactive AND tear down per-user resources.
+
+    Called when the user has explicitly cancelled, or has blocked/deleted
+    the bot in Telegram so we can't reach them anyway. Idempotent — safe
+    to call repeatedly. Never raises.
+    """
+    if not user_id:
+        return
+    try:
+        import db
+        with db.session_scope() as s:
+            u = s.get(db.User, user_id)
+            if u is None:
+                return
+            # Don't override promo — promo grants are permanent until manually revoked.
+            if u.subscription_status not in ("promo", "inactive", "cancelled"):
+                u.subscription_status = "inactive"
+        logger.info("Deactivated user=%s (reason=%s)", user_id, reason)
+    except Exception as e:
+        logger.warning("deactivate_and_cleanup db update failed user=%s: %s", user_id, e)
+    try:
+        import whatsapp_supervisor
+        whatsapp_supervisor.disable_for_user(user_id)
+    except Exception as e:
+        logger.warning("deactivate_and_cleanup WA cleanup failed user=%s: %s", user_id, e)
+
+
+async def handle_bot_blocked(update: object, context) -> None:
+    """Global error handler. When Telegram returns Forbidden (user blocked or
+    deleted the bot, or the chat is gone), mark the user inactive and stop
+    their WA bridge. Other errors are just logged.
+    """
+    err = getattr(context, "error", None)
+    try:
+        from telegram.error import Forbidden
+    except Exception:
+        Forbidden = ()  # type: ignore[assignment]
+    if not isinstance(err, Forbidden):
+        logger.warning("Unhandled telegram error: %r", err)
+        return
+
+    # Identify the user. The Update may not be present (scheduled-job calls
+    # don't pass one); fall back to the chat_id Telegram embedded in the error.
+    user_id: Optional[int] = None
+    try:
+        import db
+        chat_id = None
+        if isinstance(update, Update) and update.effective_user is not None:
+            tg_user_id = update.effective_user.id
+            with db.session_scope() as s:
+                u = db.get_user_by_telegram_id(s, tg_user_id)
+                if u is not None:
+                    user_id = u.id
+        if user_id is None:
+            # Best-effort fallback: parse chat_id from the Forbidden message.
+            # Telegram doesn't expose chat_id on the exception directly, so we
+            # rely on the update we received. If none, give up gracefully.
+            pass
+    except Exception as e:
+        logger.warning("handle_bot_blocked user lookup failed: %s", e)
+
+    if user_id is None:
+        logger.info("Forbidden raised but couldn't resolve user_id from update")
+        return
+
+    deactivate_and_cleanup(user_id, reason="bot_blocked")
 
 
 async def cmd_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1478,3 +1548,8 @@ def register_handlers(app: Application) -> None:
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     # natural language — lowest priority, catches everything else
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_natural))
+
+    # When a user has blocked or deleted the bot, any send raises Forbidden.
+    # Mark them inactive and clean up their per-user resources so we don't
+    # keep retrying every minute and don't keep a Node bridge alive.
+    app.add_error_handler(handle_bot_blocked)

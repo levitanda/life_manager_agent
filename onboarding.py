@@ -224,32 +224,59 @@ async def cmd_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Cancel the user's Stripe subscription at end of current period."""
+    """Cancel the user's access.
+
+    Stops the WhatsApp bridge immediately. For Stripe users, also schedules
+    a Stripe-side cancellation at the end of the current billing period;
+    the final status flip happens on the subscription.deleted webhook.
+    For promo / non-paying users, flips status to 'inactive' right away so
+    scheduled digests stop and gated commands deny.
+    """
     import db
-    import stripe_client
 
     tg_user = update.effective_user
     with db.session_scope() as s:
         user = db.get_user_by_telegram_id(s, tg_user.id)
-        if user is None or not user.stripe_subscription_id:
+        if user is None:
             await update.effective_message.reply_text(
-                "У тебя нет активной подписки для отмены."
+                "Нечего отменять — ты ещё не зарегистрирован."
             )
             return
-        sub_id = user.stripe_subscription_id
         user_id = user.id
+        has_stripe_sub = bool(user.stripe_subscription_id)
 
-    try:
-        stripe_client.cancel_subscription(user_id)
+    if has_stripe_sub:
+        import stripe_client
+        try:
+            stripe_client.cancel_subscription(user_id)
+        except Exception as e:
+            logger.exception("Stripe cancel failed: %s", e)
+            await update.effective_message.reply_text(
+                "⚠️ Не получилось отменить подписку в Stripe. Напиши, разберёмся вручную."
+            )
+            return
+        try:
+            import bot_handlers
+            bot_handlers.deactivate_and_cleanup(user_id, reason="user_cancel")
+        except Exception as e:
+            logger.warning("WA cleanup after /cancel failed user=%s: %s", user_id, e)
         await update.effective_message.reply_text(
             "✅ Подписка отменится в конце текущего расчётного периода. "
-            "До конца этого периода всё работает как обычно."
+            "До конца этого периода всё работает как обычно. "
+            "WhatsApp-мост отключён сейчас."
         )
+        return
+
+    # No Stripe subscription (promo user or never-paid).
+    try:
+        import bot_handlers
+        bot_handlers.deactivate_and_cleanup(user_id, reason="user_cancel")
     except Exception as e:
-        logger.exception("Stripe cancel failed: %s", e)
-        await update.effective_message.reply_text(
-            "⚠️ Не получилось отменить. Напиши, разберёмся вручную."
-        )
+        logger.warning("cancel cleanup failed user=%s: %s", user_id, e)
+    await update.effective_message.reply_text(
+        "✅ Доступ отключён. WhatsApp-мост остановлен. "
+        "Если захочешь вернуться — /start или /promo КОД."
+    )
 
 
 # ─── /profile (Phase F: re-onboarding) ───────────────────────────────────────

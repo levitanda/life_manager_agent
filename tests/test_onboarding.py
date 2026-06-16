@@ -163,29 +163,65 @@ async def test_subscribe_shows_coming_soon():
 
 
 @pytest.mark.asyncio
-async def test_cancel_no_subscription():
-    import onboarding, db
-    with db.session_scope() as s:
-        db.create_user(s, telegram_user_id=42, telegram_chat_id=42)
+async def test_cancel_unknown_user_replies_nothing_to_cancel():
+    import onboarding
     upd = _mk_update(42)
     await onboarding.cmd_cancel(upd, _mk_context())
     text = upd.effective_message.reply_text.call_args[0][0]
-    assert "нет активной подписки" in text.lower()
+    assert "не зарегистрирован" in text.lower()
 
 
 @pytest.mark.asyncio
-async def test_cancel_with_active_subscription():
-    import onboarding, db
+async def test_cancel_promo_user_flips_inactive_and_stops_bridge():
+    """Promo users with no Stripe sub should still get a clean cancel:
+    status → inactive AND WA bridge stopped."""
+    import onboarding, db, bot_handlers
+    with db.session_scope() as s:
+        u = db.create_user(s, telegram_user_id=42, telegram_chat_id=42)
+        u.subscription_status = "promo"
+    upd = _mk_update(42)
+    with patch.object(bot_handlers, "deactivate_and_cleanup") as mock_cleanup:
+        await onboarding.cmd_cancel(upd, _mk_context())
+    mock_cleanup.assert_called_once()
+    args, kwargs = mock_cleanup.call_args
+    assert args[0] > 0  # the user_id
+    text = upd.effective_message.reply_text.call_args[0][0]
+    assert "отключён" in text.lower() or "отключен" in text.lower()
+
+
+@pytest.mark.asyncio
+async def test_cancel_with_active_subscription_calls_stripe_and_cleanup():
+    """Stripe-subscribed user → Stripe cancel + immediate WA cleanup."""
+    import onboarding, db, bot_handlers
     with db.session_scope() as s:
         u = db.create_user(s, telegram_user_id=42, telegram_chat_id=42)
         u.subscription_status = "active"
         u.stripe_subscription_id = "sub_X"
     upd = _mk_update(42)
-    with patch("stripe_client.cancel_subscription", return_value=True) as mock_cancel:
+    with patch("stripe_client.cancel_subscription", return_value=True) as mock_cancel, \
+         patch.object(bot_handlers, "deactivate_and_cleanup") as mock_cleanup:
         await onboarding.cmd_cancel(upd, _mk_context())
     mock_cancel.assert_called_once()
+    mock_cleanup.assert_called_once()
     text = upd.effective_message.reply_text.call_args[0][0]
-    assert "отменится" in text.lower()
+    assert "отменится" in text.lower() and "whatsapp" in text.lower()
+
+
+@pytest.mark.asyncio
+async def test_cancel_stripe_error_does_not_call_cleanup():
+    """If Stripe rejects, don't tear down — give user a chance to retry."""
+    import onboarding, db, bot_handlers
+    with db.session_scope() as s:
+        u = db.create_user(s, telegram_user_id=42, telegram_chat_id=42)
+        u.subscription_status = "active"
+        u.stripe_subscription_id = "sub_X"
+    upd = _mk_update(42)
+    with patch("stripe_client.cancel_subscription", side_effect=RuntimeError("API down")), \
+         patch.object(bot_handlers, "deactivate_and_cleanup") as mock_cleanup:
+        await onboarding.cmd_cancel(upd, _mk_context())
+    mock_cleanup.assert_not_called()
+    text = upd.effective_message.reply_text.call_args[0][0]
+    assert "не получилось" in text.lower()
 
 
 # ─── Callback handler ────────────────────────────────────────────────────────
