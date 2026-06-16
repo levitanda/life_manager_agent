@@ -44,27 +44,33 @@ def test_calendar_record_completed_creates_done_event(mock_calendar_service):
 
 # ─── tool: record_completed_task ──────────────────────────────────────────────
 
+# Freeze "now" inside tools.record_completed_task to noon — otherwise the
+# test's slot-construction math becomes ambiguous in the late evening (when
+# the "future" slot end clamps below current hour and both slots get
+# classified as past).
+class _FrozenNoon(datetime.datetime):
+    @classmethod
+    def now(cls, tz=None):
+        base = datetime.datetime(2026, 6, 15, 12, 0)
+        return tz.localize(base) if tz else base
+
+
 def test_tool_record_picks_past_free_slot():
     """Tool should pick a past free slot, not a future one."""
-    now = datetime.datetime.now(TZ)
-    today_hh = now.hour
-    # Build slot list: one past (3 hours ago) and one future (3 hours ahead)
-    past_start_h = max(7, today_hh - 3)
-    past_end_h = past_start_h + 1
-    future_start_h = min(22, today_hh + 3)
-    future_end_h = min(23, future_start_h + 1)
+    past_start_h, past_end_h = 9, 10        # before frozen noon
+    future_start_h, future_end_h = 15, 16   # after frozen noon
 
     slots = [
         {"start": f"{past_start_h:02d}:00", "end": f"{past_end_h:02d}:00"},
         {"start": f"{future_start_h:02d}:00", "end": f"{future_end_h:02d}:00"},
     ]
 
-    with patch("calendar_client.find_free_slots", return_value=slots), \
+    with patch("tools.datetime.datetime", _FrozenNoon), \
+         patch("calendar_client.find_free_slots", return_value=slots), \
          patch("calendar_client.record_completed_task", return_value="evt_x") as mock_record:
         result = tools.record_completed_task(title="помыла окна", duration_minutes=30)
 
     assert result["status"] == "ok"
-    # Should have called record with placement at past slot start
     call_args = mock_record.call_args
     placement_dt = call_args[0][1] if len(call_args[0]) > 1 else call_args.kwargs.get("start_dt")
     assert placement_dt.hour == past_start_h
@@ -72,19 +78,18 @@ def test_tool_record_picks_past_free_slot():
 
 def test_tool_record_fallback_when_no_past_slots():
     """When all free slots are in the future, fall back to placing before now."""
-    now = datetime.datetime.now(TZ)
-    future_h = min(23, now.hour + 2)
-    slots = [{"start": f"{future_h:02d}:00", "end": f"{future_h:02d}:30"}]
+    slots = [{"start": "15:00", "end": "15:30"}]  # future of frozen noon
 
-    with patch("calendar_client.find_free_slots", return_value=slots), \
+    with patch("tools.datetime.datetime", _FrozenNoon), \
+         patch("calendar_client.find_free_slots", return_value=slots), \
          patch("calendar_client.record_completed_task", return_value="evt_y") as mock_record:
         result = tools.record_completed_task(title="thing", duration_minutes=30)
 
     assert result["status"] == "ok"
     call_args = mock_record.call_args
     placement_dt = call_args[0][1] if len(call_args[0]) > 1 else call_args.kwargs.get("start_dt")
-    # placement should be in the past or at most equal to now
-    assert placement_dt <= now + datetime.timedelta(seconds=5)
+    frozen_now = TZ.localize(datetime.datetime(2026, 6, 15, 12, 0))
+    assert placement_dt <= frozen_now + datetime.timedelta(seconds=5)
 
 
 def test_tool_record_handles_empty_slots():
