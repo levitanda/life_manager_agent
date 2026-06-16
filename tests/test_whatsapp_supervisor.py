@@ -117,6 +117,29 @@ def test_start_bridge_idempotent_when_process_alive(monkeypatch):
     assert call_count == 1
 
 
+def test_start_bridge_passes_absolute_auth_dir_in_env(monkeypatch):
+    """auth_dir in DB is relative; the bridge subprocess CWD differs from the
+    Python supervisor's CWD, so a relative WA_AUTH_DIR points to a different
+    folder than the supervisor wipes. start_bridge must resolve to absolute
+    before exporting to env."""
+    import whatsapp_supervisor
+    user_id = _make_user(1)
+    captured_env = {}
+
+    def popen(cmd, env=None, **kw):
+        captured_env.update(env or {})
+        return _mock_popen(pid=42, poll_return=None)
+
+    monkeypatch.setattr("subprocess.Popen", popen)
+    monkeypatch.setattr("builtins.open", lambda *a, **k: MagicMock())
+
+    whatsapp_supervisor.start_bridge(user_id)
+    assert "WA_AUTH_DIR" in captured_env
+    from pathlib import Path
+    assert Path(captured_env["WA_AUTH_DIR"]).is_absolute(), \
+        f"WA_AUTH_DIR was relative: {captured_env['WA_AUTH_DIR']!r}"
+
+
 def test_start_bridge_respawns_after_dead_process(monkeypatch):
     import whatsapp_supervisor
     user_id = _make_user(1)

@@ -129,6 +129,14 @@ def start_bridge(user_id: int, pair_phone: Optional[str] = None) -> int:
         port = int(row.port)
         auth_dir = row.auth_dir
 
+    # auth_dir in the DB may be relative (e.g. 'data/users/2/wa_auth').
+    # The Python supervisor's CWD is the project root, but the bridge
+    # subprocess runs with CWD=whatsapp_bridge/ — so the SAME relative
+    # path resolves to two DIFFERENT folders. Without absolutising here,
+    # the supervisor wipes A while Baileys loads stale creds from B and
+    # then dies with 401 because WA already invalidated those credentials.
+    auth_dir_abs = str(Path(auth_dir).resolve())
+
     # If pair mode is requested, force a clean slate: kill any live process
     # and wipe auth state so Baileys takes the "not registered" path.
     if pair_phone:
@@ -141,8 +149,8 @@ def start_bridge(user_id: int, pair_phone: Optional[str] = None) -> int:
                 pass
         try:
             import shutil
-            shutil.rmtree(auth_dir, ignore_errors=True)
-            Path(auth_dir).mkdir(parents=True, exist_ok=True)
+            shutil.rmtree(auth_dir_abs, ignore_errors=True)
+            Path(auth_dir_abs).mkdir(parents=True, exist_ok=True)
         except Exception as e:
             logger.warning("auth_dir wipe failed for user=%s: %s", user_id, e)
     else:
@@ -156,11 +164,11 @@ def start_bridge(user_id: int, pair_phone: Optional[str] = None) -> int:
     log_fp = open(log_path, "a", buffering=1, encoding="utf-8")
     log_fp.write(
         f"\n=== {datetime.datetime.utcnow().isoformat()} starting user={user_id} "
-        f"port={port} pair={bool(pair_phone)} ===\n"
+        f"port={port} pair={bool(pair_phone)} auth_dir={auth_dir_abs} ===\n"
     )
     env = os.environ.copy()
     env["BRIDGE_PORT"] = str(port)
-    env["WA_AUTH_DIR"] = auth_dir
+    env["WA_AUTH_DIR"] = auth_dir_abs
     env["LOG_LEVEL"] = env.get("WA_LOG_LEVEL", "warn")
     if pair_phone:
         env["BRIDGE_PAIR_PHONE"] = "".join(c for c in pair_phone if c.isdigit())
