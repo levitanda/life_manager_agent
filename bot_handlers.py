@@ -137,21 +137,28 @@ async def cmd_memory(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Inline help for already-onboarded users. /start is handled by onboarding."""
+    """Inline help for already-onboarded users. /start is handled by onboarding.
+
+    Supports `/help short` for a compact (~under 500 chars) overview, otherwise
+    sends the full categorized command list from the i18n catalog. The whole
+    text is wrapped in RTL embedding markers for Hebrew users so the embedded
+    latin command names render in the right direction.
+    """
     user, user_id = await _authorize(update)
     if user is None and user_id is None:
         return
-    await update.message.reply_text(
-        "Привет! Я твой личный агент. Просто пиши мне что нужно сделать — я пойму.\n\n"
-        "Команды (не обязательны):\n"
-        "/tasks — список задач\n"
-        "/digest — дайджест прямо сейчас\n"
-        "/memory — моя долгосрочная память о тебе\n"
-        "/progress — записать прогресс за день\n"
-        "/promo КОД — активировать промокод\n"
-        "/cancel — отменить подписку\n"
-        "/help — эта справка"
-    )
+
+    import i18n
+    lang = i18n.user_language(user_id)
+
+    args = context.args or []
+    mode = (args[0].lower() if args else "")
+    key = "help.short_text" if mode == "short" else "help.full_text"
+    text = i18n.t(key, lang)
+    if lang == "he":
+        text = i18n.wrap_rtl(text)
+
+    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
 
 
 async def cmd_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -835,6 +842,69 @@ async def _reply_split(update: Update, text: str) -> None:
         await update.message.reply_text(chunk)
 
 
+def _collect_shared_goal_attribution(user_id: int) -> list[dict]:
+    """For each shared goal in groups the user belongs to, gather member
+    display names + who last logged progress.
+
+    Returns a list of dicts ready for digest.generate_morning_digest's
+    shared_goals kwarg. Empty list when the user isn't in any group with
+    active shared goals.
+    """
+    import db
+    out: list[dict] = []
+    try:
+        with db.session_scope() as s:
+            group_ids = [
+                r.group_id for r in s.query(db.GroupMember)
+                .filter_by(user_id=user_id)
+                .filter(db.GroupMember.accepted_at.isnot(None))
+                .all()
+            ]
+            if not group_ids:
+                return []
+            goals = (
+                s.query(db.Goal)
+                .filter(
+                    db.Goal.status == "active",
+                    db.Goal.group_id.in_(group_ids),
+                )
+                .all()
+            )
+            for g in goals:
+                # Member display names in the goal's group
+                member_rows = (
+                    s.query(db.User)
+                    .join(db.GroupMember, db.GroupMember.user_id == db.User.id)
+                    .filter(
+                        db.GroupMember.group_id == g.group_id,
+                        db.GroupMember.accepted_at.isnot(None),
+                    )
+                    .all()
+                )
+                members = [u.display_name or (u.telegram_username or "?") for u in member_rows]
+                # Last progress entry → who logged it
+                last = (
+                    s.query(db.GoalProgress)
+                    .filter_by(goal_id=g.id)
+                    .order_by(db.GoalProgress.ts.desc())
+                    .first()
+                )
+                last_by = None
+                if last is not None:
+                    u = s.get(db.User, last.user_id)
+                    if u is not None:
+                        last_by = u.display_name or u.telegram_username or "?"
+                out.append({
+                    "title": g.title,
+                    "members": members,
+                    "last_progress_by": last_by,
+                })
+    except Exception as e:
+        logger.warning("collect shared goal attribution failed: %s", e)
+        return []
+    return out
+
+
 async def _send_morning_digest(
     app: Application,
     target_date: datetime.date | None = None,
@@ -855,6 +925,7 @@ async def _send_morning_digest(
     user_name: Optional[str] = None
     user_timezone = config.TIMEZONE
     user_city: Optional[str] = None
+    user_language = "ru"
     if target_user_id is not None:
         try:
             import db
@@ -865,11 +936,12 @@ async def _send_morning_digest(
                     user_name = u.display_name or None
                     user_timezone = u.timezone or config.TIMEZONE
                     user_city = getattr(u, "city", None)
+                    user_language = getattr(u, "language", None) or "ru"
         except Exception as e:
             logger.warning("morning digest: user lookup for %s failed: %s", target_user_id, e)
     logger.info(
-        "morning digest: target_user_id=%s chat_id=%s name=%s tz=%s city=%s",
-        target_user_id, chat_id, user_name, user_timezone, user_city,
+        "morning digest: target_user_id=%s chat_id=%s name=%s tz=%s city=%s lang=%s",
+        target_user_id, chat_id, user_name, user_timezone, user_city, user_language,
     )
 
     def _safe(fn, default, *, label):
@@ -926,6 +998,12 @@ async def _send_morning_digest(
                     lambda: whatsapp_summary.summarize_unread_chats(wa_unread, user_id=target_user_id),
                     "", label="whatsapp summary")
 
+            # Phase H: attribution for shared (group) goals
+            shared_goals = _safe(
+                lambda: _collect_shared_goal_attribution(target_user_id) if target_user_id is not None else [],
+                [], label="shared goal attribution",
+            )
+
             text = digest_module.generate_morning_digest(
                 events, short, long_, yesterday, emails, target_date, weather,
                 news=news or None, birthdays=birthdays or None,
@@ -934,6 +1012,8 @@ async def _send_morning_digest(
                 whatsapp_summary=wa_summary or None,
                 user_name=user_name,
                 user_timezone=user_timezone,
+                user_language=user_language,
+                shared_goals=shared_goals or None,
             )
 
             # Alice cache is still single-user; only write when sending to Daria.
@@ -1011,6 +1091,338 @@ async def _send_evening_checkin(app: Application, *, target_user_id: int | None 
         logger.error("Evening check-in failed: %s", e)
 
 
+# ─── Groups (Phase H) ─────────────────────────────────────────────────────────
+
+
+def _resolve_lang(user_id: int | None) -> str:
+    """Look up the user's UI language for i18n.t() calls."""
+    if user_id is None:
+        return "ru"
+    try:
+        from i18n import user_language
+        return user_language(user_id)
+    except Exception:
+        return "ru"
+
+
+def _parse_int_arg(args: list[str], idx: int) -> int | None:
+    if idx >= len(args):
+        return None
+    try:
+        return int(args[idx])
+    except (ValueError, TypeError):
+        return None
+
+
+def _group_error_reply(e: Exception, lang: str) -> str:
+    """Translate the exception type into a localized error string."""
+    from i18n import t
+    if isinstance(e, PermissionError):
+        return t("groups.error.not_admin", lang)
+    if isinstance(e, LookupError):
+        return t("groups.error.not_found", lang)
+    if isinstance(e, ValueError):
+        return t("groups.error.value", lang, reason=str(e))
+    return t("groups.error.value", lang, reason=str(e))
+
+
+async def cmd_group_create(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    from i18n import t
+    user, user_id = await _authorize(update)
+    if user is None and user_id is None:
+        return
+    lang = _resolve_lang(user_id)
+    if not context.args:
+        await update.message.reply_text(t("groups.usage.create", lang))
+        return
+    name = " ".join(context.args).strip()
+    try:
+        import groups
+        res = groups.create_group(user_id, name)
+        await update.message.reply_text(
+            t("groups.created", lang, name=res["name"], group_id=res["group_id"])
+        )
+    except Exception as e:
+        await update.message.reply_text(_group_error_reply(e, lang))
+
+
+async def cmd_group_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    from i18n import t
+    user, user_id = await _authorize(update)
+    if user is None and user_id is None:
+        return
+    lang = _resolve_lang(user_id)
+    try:
+        import groups
+        rows = groups.list_my_groups(user_id)
+    except Exception as e:
+        await update.message.reply_text(_group_error_reply(e, lang))
+        return
+    if not rows:
+        await update.message.reply_text(t("groups.list_empty", lang))
+        return
+    lines = [t("groups.list_header", lang)]
+    for r in rows:
+        if r["pending"]:
+            lines.append(t("groups.list_item_pending", lang, group_id=r["group_id"], name=r["name"]))
+        else:
+            lines.append(t(
+                "groups.list_item", lang,
+                group_id=r["group_id"], name=r["name"],
+                role=r["role"], member_count=r["member_count"],
+            ))
+    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+
+
+async def cmd_group_members(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    from i18n import t
+    user, user_id = await _authorize(update)
+    if user is None and user_id is None:
+        return
+    lang = _resolve_lang(user_id)
+    gid = _parse_int_arg(context.args, 0)
+    if gid is None:
+        await update.message.reply_text(t("groups.usage.members", lang))
+        return
+    try:
+        import groups, db
+        members = groups.list_members(user_id, gid)
+        with db.session_scope() as s:
+            g = s.get(db.Group, gid)
+            gname = g.name if g else "?"
+    except Exception as e:
+        await update.message.reply_text(_group_error_reply(e, lang))
+        return
+    lines = [t("groups.members_header", lang, name=gname)]
+    for m in members:
+        display = m.get("display_name") or "?"
+        username = ("@" + m["username"]) if m.get("username") else "—"
+        if m["pending"]:
+            lines.append(t("groups.member_pending", lang, display=display, username=username))
+        elif m["role"] == "admin":
+            lines.append(t("groups.member_admin", lang, display=display, username=username))
+        else:
+            lines.append(t("groups.member_normal", lang, display=display, username=username))
+    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+
+
+async def cmd_group_invite(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    from i18n import t
+    user, user_id = await _authorize(update)
+    if user is None and user_id is None:
+        return
+    lang = _resolve_lang(user_id)
+    gid = _parse_int_arg(context.args, 0)
+    if gid is None or len(context.args) < 2:
+        await update.message.reply_text(t("groups.usage.invite", lang))
+        return
+    username = context.args[1].lstrip("@").strip()
+    try:
+        import groups, db
+        res = groups.invite_user(user_id, gid, username)
+        with db.session_scope() as s:
+            g = s.get(db.Group, gid)
+            gname = g.name if g else "?"
+            inviter = s.get(db.User, user_id)
+            inviter_name = inviter.display_name if inviter else "?"
+    except Exception as e:
+        await update.message.reply_text(_group_error_reply(e, lang))
+        return
+
+    if res.get("already_member"):
+        await update.message.reply_text(t("groups.invite_already_member", lang))
+        return
+    if res.get("already_invited"):
+        await update.message.reply_text(t("groups.invite_already_invited", lang))
+        return
+
+    if "invite_token" in res:
+        # User not in DB yet → return a deep-link
+        try:
+            bot_username = context.bot.username
+        except Exception:
+            bot_username = "your_bot"
+        link = f"https://t.me/{bot_username}?start=invite_{res['invite_token']}"
+        await update.message.reply_text(
+            t("groups.invite_link_ready", lang, username=username, link=link)
+        )
+        return
+
+    # Existing user → DM them an inline accept/decline keyboard, ack admin
+    target_user_id = res["user_id"]
+    target_lang = _resolve_lang(target_user_id)
+    try:
+        import db
+        with db.session_scope() as s:
+            target = s.get(db.User, target_user_id)
+            target_chat = int(target.telegram_chat_id) if target else None
+    except Exception:
+        target_chat = None
+    if target_chat is not None:
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton(t("groups.accept", target_lang), callback_data=f"group:accept:{gid}"),
+            InlineKeyboardButton(t("groups.decline", target_lang), callback_data=f"group:decline:{gid}"),
+        ]])
+        try:
+            await context.bot.send_message(
+                chat_id=target_chat,
+                text=t("groups.invite_notice", target_lang, inviter=inviter_name, group_name=gname),
+                reply_markup=keyboard,
+            )
+        except Exception as e:
+            logger.warning("group invite DM failed: %s", e)
+    await update.message.reply_text(
+        t("groups.invite_sent_to_user", lang, username=username)
+    )
+
+
+async def cmd_group_remove(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    from i18n import t
+    user, user_id = await _authorize(update)
+    if user is None and user_id is None:
+        return
+    lang = _resolve_lang(user_id)
+    gid = _parse_int_arg(context.args, 0)
+    target_id = _parse_int_arg(context.args, 1)
+    if gid is None or target_id is None:
+        await update.message.reply_text(t("groups.usage.remove", lang))
+        return
+    try:
+        import groups
+        groups.remove_member(user_id, gid, target_id)
+        await update.message.reply_text(t("groups.removed", lang))
+    except Exception as e:
+        await update.message.reply_text(_group_error_reply(e, lang))
+
+
+async def cmd_group_leave(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    from i18n import t
+    user, user_id = await _authorize(update)
+    if user is None and user_id is None:
+        return
+    lang = _resolve_lang(user_id)
+    gid = _parse_int_arg(context.args, 0)
+    if gid is None:
+        await update.message.reply_text(t("groups.usage.leave", lang))
+        return
+    try:
+        import groups
+        groups.leave_group(user_id, gid)
+        await update.message.reply_text(t("groups.left", lang))
+    except Exception as e:
+        await update.message.reply_text(_group_error_reply(e, lang))
+
+
+async def cmd_group_promote(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    from i18n import t
+    user, user_id = await _authorize(update)
+    if user is None and user_id is None:
+        return
+    lang = _resolve_lang(user_id)
+    gid = _parse_int_arg(context.args, 0)
+    target_id = _parse_int_arg(context.args, 1)
+    if gid is None or target_id is None:
+        await update.message.reply_text(t("groups.usage.promote", lang))
+        return
+    try:
+        import groups
+        groups.promote(user_id, gid, target_id)
+        await update.message.reply_text(t("groups.promoted", lang))
+    except Exception as e:
+        await update.message.reply_text(_group_error_reply(e, lang))
+
+
+async def cmd_group_demote(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    from i18n import t
+    user, user_id = await _authorize(update)
+    if user is None and user_id is None:
+        return
+    lang = _resolve_lang(user_id)
+    gid = _parse_int_arg(context.args, 0)
+    target_id = _parse_int_arg(context.args, 1)
+    if gid is None or target_id is None:
+        await update.message.reply_text(t("groups.usage.demote", lang))
+        return
+    try:
+        import groups
+        groups.demote(user_id, gid, target_id)
+        await update.message.reply_text(t("groups.demoted", lang))
+    except Exception as e:
+        await update.message.reply_text(_group_error_reply(e, lang))
+
+
+async def cmd_group_rename(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    from i18n import t
+    user, user_id = await _authorize(update)
+    if user is None and user_id is None:
+        return
+    lang = _resolve_lang(user_id)
+    gid = _parse_int_arg(context.args, 0)
+    if gid is None or len(context.args) < 2:
+        await update.message.reply_text(t("groups.usage.rename", lang))
+        return
+    new_name = " ".join(context.args[1:]).strip()
+    try:
+        import groups
+        groups.rename(user_id, gid, new_name)
+        await update.message.reply_text(t("groups.renamed", lang, name=new_name))
+    except Exception as e:
+        await update.message.reply_text(_group_error_reply(e, lang))
+
+
+async def cmd_group_delete(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    from i18n import t
+    user, user_id = await _authorize(update)
+    if user is None and user_id is None:
+        return
+    lang = _resolve_lang(user_id)
+    gid = _parse_int_arg(context.args, 0)
+    if gid is None:
+        await update.message.reply_text(t("groups.usage.delete", lang))
+        return
+    try:
+        import groups
+        groups.delete_group(user_id, gid)
+        await update.message.reply_text(t("groups.deleted", lang))
+    except Exception as e:
+        await update.message.reply_text(_group_error_reply(e, lang))
+
+
+async def callback_group_invite(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle accept/decline taps on the invite DM."""
+    from i18n import t
+    user, user_id = await _authorize(update)
+    if user is None and user_id is None:
+        return
+    query = update.callback_query
+    await query.answer()
+    lang = _resolve_lang(user_id)
+    parts = (query.data or "").split(":")
+    if len(parts) != 3:
+        return
+    action = parts[1]
+    try:
+        gid = int(parts[2])
+    except ValueError:
+        return
+    try:
+        import groups, db
+        if action == "accept":
+            groups.accept_invite(user_id, gid)
+            with db.session_scope() as s:
+                g = s.get(db.Group, gid)
+                gname = g.name if g else "?"
+            await query.edit_message_text(t("groups.accepted", lang, name=gname))
+        elif action == "decline":
+            groups.decline_invite(user_id, gid)
+            await query.edit_message_text(t("groups.declined", lang))
+    except Exception as e:
+        try:
+            await query.edit_message_text(_group_error_reply(e, lang))
+        except Exception:
+            pass
+
+
 def register_handlers(app: Application) -> None:
     import onboarding
 
@@ -1048,6 +1460,19 @@ def register_handlers(app: Application) -> None:
     app.add_handler(progress_conv)
     app.add_handler(CallbackQueryHandler(callback_email, pattern="^email_"))
     app.add_handler(CallbackQueryHandler(callback_conflict, pattern="^conflict_"))
+
+    # Groups (Phase H)
+    app.add_handler(CommandHandler("group_create", cmd_group_create))
+    app.add_handler(CommandHandler("group_list", cmd_group_list))
+    app.add_handler(CommandHandler("group_members", cmd_group_members))
+    app.add_handler(CommandHandler("group_invite", cmd_group_invite))
+    app.add_handler(CommandHandler("group_remove", cmd_group_remove))
+    app.add_handler(CommandHandler("group_leave", cmd_group_leave))
+    app.add_handler(CommandHandler("group_promote", cmd_group_promote))
+    app.add_handler(CommandHandler("group_demote", cmd_group_demote))
+    app.add_handler(CommandHandler("group_rename", cmd_group_rename))
+    app.add_handler(CommandHandler("group_delete", cmd_group_delete))
+    app.add_handler(CallbackQueryHandler(callback_group_invite, pattern=r"^group:(accept|decline):"))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     # natural language — lowest priority, catches everything else
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_natural))

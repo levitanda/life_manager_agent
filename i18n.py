@@ -91,6 +91,103 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "dashboard.open_browser": "📊 Открыть в браузере",
         "dashboard.goals_btn": "🎯 Цели",
         "dashboard.tasks_btn": "📋 Задачи",
+        # ─── /help (Phase I) ───────────────────────────────────────────────
+        "help.full_text": (
+            "🤖 *Что я умею*\n"
+            "\n"
+            "Я твой личный AI-ассистент. Пиши обычными словами — я разберусь.\n"
+            "Команды ниже — это шорткаты.\n"
+            "\n"
+            "📋 *Задачи и календарь*\n"
+            "  /tasks         — список активных задач\n"
+            "  /add           — быстро добавить задачу\n"
+            "  /done          — отметить задачу выполненной\n"
+            "  /digest        — утренний дайджест прямо сейчас\n"
+            "  /progress      — записать прогресс за день\n"
+            "\n"
+            "🎯 *Цели и статистика*\n"
+            "  /dashboard     — обзор задач, целей, стриков, прогресса\n"
+            "\n"
+            "👥 *Семья / группы*\n"
+            "  /group_list      — мои группы\n"
+            "  /group_create    — создать группу\n"
+            "  /group_invite    — пригласить кого-то\n"
+            "  /group_remove    — убрать из группы\n"
+            "  /group_members   — кто в группе\n"
+            "  /group_leave     — выйти из группы\n"
+            "  /group_promote   — сделать админом\n"
+            "  /group_demote    — снять админку\n"
+            "  /group_rename    — переименовать группу\n"
+            "  /group_delete    — удалить группу\n"
+            "\n"
+            "🧠 *Память и личность*\n"
+            "  /memory        — что я помню о тебе\n"
+            "  /profile       — изменить имя/город/язык/время/личность\n"
+            "\n"
+            "⚙️ *Настройки и интеграции*\n"
+            "  /settings      — WhatsApp, Pushover, Алиса, Tuya, VeSync, Дневник\n"
+            "\n"
+            "💳 *Подписка*\n"
+            "  /subscribe     — оформить подписку\n"
+            "  /promo КОД     — активировать промокод\n"
+            "  /cancel        — отменить подписку\n"
+            "\n"
+            "❓ */help* — показать снова\n"
+            "\n"
+            "Пиши обычными словами:\n"
+            "  «напомни через час позвонить маме»\n"
+            "  «что в WhatsApp?»\n"
+            "  «добавь долгосрочную цель: выучить итальянский»"
+        ),
+        "help.short_text": (
+            "Команды через /, или пиши обычными словами.\n"
+            "/dashboard, /tasks, /settings, /profile, /group_list — основное.\n"
+            "/help — полный список."
+        ),
+        # ─── Groups (Phase H) ──────────────────────────────────────────────
+        "groups.created": "👥 Группа «{name}» создана (id={group_id}).",
+        "groups.list_header": "👥 *Твои группы:*",
+        "groups.list_empty": "Ты пока не состоишь ни в одной группе. Создай через /group_create <название>.",
+        "groups.list_item": "  {group_id}. {name} — {role}, участников: {member_count}",
+        "groups.list_item_pending": "  {group_id}. {name} — приглашение, ожидает решения",
+        "groups.members_header": "👥 *Участники группы «{name}»:*",
+        "groups.member_admin": "  • {display} ({username}) — админ",
+        "groups.member_normal": "  • {display} ({username}) — участник",
+        "groups.member_pending": "  • {display} ({username}) — приглашён, не подтвердил",
+        "groups.invite_sent_to_user": "✉️ Приглашение отправлено @{username} в личку.",
+        "groups.invite_link_ready": "✉️ Дай ссылку @{username} (он/она ещё не пользуется ботом):\n{link}",
+        "groups.invite_notice": "👋 {inviter} приглашает тебя в группу «{group_name}». Хочешь присоединиться?",
+        "groups.invite_already_member": "Этот пользователь уже в группе.",
+        "groups.invite_already_invited": "Этот пользователь уже приглашён — ждём ответа.",
+        "groups.accept": "✅ Принять",
+        "groups.decline": "❌ Отклонить",
+        "groups.accepted": "✅ Ты в группе «{name}».",
+        "groups.declined": "❌ Приглашение отклонено.",
+        "groups.removed": "🗑 Участник удалён.",
+        "groups.left": "👋 Ты вышел(а) из группы.",
+        "groups.promoted": "⬆️ Готово — теперь админ.",
+        "groups.demoted": "⬇️ Готово — больше не админ.",
+        "groups.renamed": "✏️ Группа переименована в «{name}».",
+        "groups.deleted": "🗑 Группа удалена. Общие цели стали личными.",
+        "groups.added_via_invite": "👥 Ты добавлен(а) в группу «{group_name}».",
+        # usage hints
+        "groups.usage.create": "Использование: /group_create <название>",
+        "groups.usage.members": "Использование: /group_members <id группы>",
+        "groups.usage.invite": "Использование: /group_invite <id группы> <@username>",
+        "groups.usage.remove": "Использование: /group_remove <id группы> <user_id>",
+        "groups.usage.leave": "Использование: /group_leave <id группы>",
+        "groups.usage.promote": "Использование: /group_promote <id группы> <user_id>",
+        "groups.usage.demote": "Использование: /group_demote <id группы> <user_id>",
+        "groups.usage.rename": "Использование: /group_rename <id группы> <новое название>",
+        "groups.usage.delete": "Использование: /group_delete <id группы>",
+        # errors
+        "groups.error.not_found": "Группа не найдена.",
+        "groups.error.not_admin": "Только админ группы может это сделать.",
+        "groups.error.not_member": "Ты не участник этой группы.",
+        "groups.error.user_not_found": "Пользователь не найден.",
+        "groups.error.value": "Не получилось: {reason}",
+        "groups.error.invite_token_invalid": "Ссылка-приглашение некорректна.",
+        "groups.error.invite_token_expired": "Ссылка-приглашение истекла (старше 7 дней).",
     },
     "en": {
         "onboard.choose_language": "🌍 Choose your language / Выберите язык / בחר שפה",
@@ -153,6 +250,101 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "dashboard.open_browser": "📊 Open in browser",
         "dashboard.goals_btn": "🎯 Goals",
         "dashboard.tasks_btn": "📋 Tasks",
+        # ─── /help (Phase I) ───────────────────────────────────────────────
+        "help.full_text": (
+            "🤖 *What I can do*\n"
+            "\n"
+            "I'm your personal AI assistant. Just write in plain language — I'll figure it out.\n"
+            "The commands below are shortcuts.\n"
+            "\n"
+            "📋 *Tasks and calendar*\n"
+            "  /tasks         — list active tasks\n"
+            "  /add           — quickly add a task\n"
+            "  /done          — mark a task as completed\n"
+            "  /digest        — morning digest right now\n"
+            "  /progress      — log your progress for the day\n"
+            "\n"
+            "🎯 *Goals and stats*\n"
+            "  /dashboard     — overview of tasks, goals, streaks, progress\n"
+            "\n"
+            "👥 *Family / groups*\n"
+            "  /group_list      — my groups\n"
+            "  /group_create    — create a group\n"
+            "  /group_invite    — invite someone\n"
+            "  /group_remove    — remove from a group\n"
+            "  /group_members   — who's in the group\n"
+            "  /group_leave     — leave a group\n"
+            "  /group_promote   — make admin\n"
+            "  /group_demote    — remove admin\n"
+            "  /group_rename    — rename a group\n"
+            "  /group_delete    — delete a group\n"
+            "\n"
+            "🧠 *Memory and personality*\n"
+            "  /memory        — what I remember about you\n"
+            "  /profile       — change name/city/language/time/personality\n"
+            "\n"
+            "⚙️ *Settings and integrations*\n"
+            "  /settings      — WhatsApp, Pushover, Alice, Tuya, VeSync, Diary\n"
+            "\n"
+            "💳 *Subscription*\n"
+            "  /subscribe     — start a subscription\n"
+            "  /promo CODE    — activate a promo code\n"
+            "  /cancel        — cancel subscription\n"
+            "\n"
+            "❓ */help* — show this again\n"
+            "\n"
+            "Write in plain language:\n"
+            "  \"remind me in an hour to call mom\"\n"
+            "  \"what's in WhatsApp?\"\n"
+            "  \"add a long-term goal: learn Italian\""
+        ),
+        "help.short_text": (
+            "Use / commands, or just write in plain language.\n"
+            "/dashboard, /tasks, /settings, /profile, /group_list — the basics.\n"
+            "/help — full list."
+        ),
+        # ─── Groups (Phase H) ──────────────────────────────────────────────
+        "groups.created": "👥 Group «{name}» created (id={group_id}).",
+        "groups.list_header": "👥 *Your groups:*",
+        "groups.list_empty": "You're not in any groups yet. Create one with /group_create <name>.",
+        "groups.list_item": "  {group_id}. {name} — {role}, members: {member_count}",
+        "groups.list_item_pending": "  {group_id}. {name} — invitation pending",
+        "groups.members_header": "👥 *Members of «{name}»:*",
+        "groups.member_admin": "  • {display} ({username}) — admin",
+        "groups.member_normal": "  • {display} ({username}) — member",
+        "groups.member_pending": "  • {display} ({username}) — invited, not yet accepted",
+        "groups.invite_sent_to_user": "✉️ Invitation sent to @{username} in DM.",
+        "groups.invite_link_ready": "✉️ Share this link with @{username} (not in the bot yet):\n{link}",
+        "groups.invite_notice": "👋 {inviter} is inviting you to the group «{group_name}». Join?",
+        "groups.invite_already_member": "This user is already in the group.",
+        "groups.invite_already_invited": "Already invited — waiting for them to accept.",
+        "groups.accept": "✅ Accept",
+        "groups.decline": "❌ Decline",
+        "groups.accepted": "✅ You joined «{name}».",
+        "groups.declined": "❌ Invitation declined.",
+        "groups.removed": "🗑 Member removed.",
+        "groups.left": "👋 You left the group.",
+        "groups.promoted": "⬆️ Done — now admin.",
+        "groups.demoted": "⬇️ Done — no longer admin.",
+        "groups.renamed": "✏️ Group renamed to «{name}».",
+        "groups.deleted": "🗑 Group deleted. Shared goals are now personal.",
+        "groups.added_via_invite": "👥 You were added to «{group_name}».",
+        "groups.usage.create": "Usage: /group_create <name>",
+        "groups.usage.members": "Usage: /group_members <group id>",
+        "groups.usage.invite": "Usage: /group_invite <group id> <@username>",
+        "groups.usage.remove": "Usage: /group_remove <group id> <user_id>",
+        "groups.usage.leave": "Usage: /group_leave <group id>",
+        "groups.usage.promote": "Usage: /group_promote <group id> <user_id>",
+        "groups.usage.demote": "Usage: /group_demote <group id> <user_id>",
+        "groups.usage.rename": "Usage: /group_rename <group id> <new name>",
+        "groups.usage.delete": "Usage: /group_delete <group id>",
+        "groups.error.not_found": "Group not found.",
+        "groups.error.not_admin": "Only a group admin can do this.",
+        "groups.error.not_member": "You're not a member of this group.",
+        "groups.error.user_not_found": "User not found.",
+        "groups.error.value": "Failed: {reason}",
+        "groups.error.invite_token_invalid": "Invite link is invalid.",
+        "groups.error.invite_token_expired": "Invite link expired (older than 7 days).",
     },
     "he": {
         "onboard.choose_language": "🌍 Choose your language / Выберите язык / בחר שפה",
@@ -215,6 +407,101 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "dashboard.open_browser": "📊 פתח בדפדפן",
         "dashboard.goals_btn": "🎯 מטרות",
         "dashboard.tasks_btn": "📋 משימות",
+        # ─── /help (Phase I) ───────────────────────────────────────────────
+        "help.full_text": (
+            "🤖 *מה אני יודע לעשות*\n"
+            "\n"
+            "אני העוזר האישי שלך. כתוב במילים רגילות — אני אבין.\n"
+            "הפקודות למטה הן קיצורי דרך.\n"
+            "\n"
+            "📋 *משימות ויומן*\n"
+            "  /tasks         — רשימת משימות פעילות\n"
+            "  /add           — הוספת משימה במהירות\n"
+            "  /done          — סימון משימה כבוצעה\n"
+            "  /digest        — דייג'סט בוקר עכשיו\n"
+            "  /progress      — תיעוד התקדמות יומית\n"
+            "\n"
+            "🎯 *מטרות וסטטיסטיקה*\n"
+            "  /dashboard     — סקירת משימות, מטרות, רצפים, התקדמות\n"
+            "\n"
+            "👥 *משפחה / קבוצות*\n"
+            "  /group_list      — הקבוצות שלי\n"
+            "  /group_create    — יצירת קבוצה\n"
+            "  /group_invite    — הזמנה לקבוצה\n"
+            "  /group_remove    — הסרה מקבוצה\n"
+            "  /group_members   — מי בקבוצה\n"
+            "  /group_leave     — יציאה מקבוצה\n"
+            "  /group_promote   — הפיכת חבר למנהל\n"
+            "  /group_demote    — ביטול מנהל\n"
+            "  /group_rename    — שינוי שם הקבוצה\n"
+            "  /group_delete    — מחיקת קבוצה\n"
+            "\n"
+            "🧠 *זיכרון ואישיות*\n"
+            "  /memory        — מה אני זוכר עליך\n"
+            "  /profile       — שינוי שם/עיר/שפה/שעה/אישיות\n"
+            "\n"
+            "⚙️ *הגדרות ואינטגרציות*\n"
+            "  /settings      — WhatsApp, Pushover, Alice, Tuya, VeSync, יומן\n"
+            "\n"
+            "💳 *מנוי*\n"
+            "  /subscribe     — הרשמה למנוי\n"
+            "  /promo קוד     — הפעלת קוד פרומו\n"
+            "  /cancel        — ביטול מנוי\n"
+            "\n"
+            "❓ */help* — להציג שוב\n"
+            "\n"
+            "אפשר לכתוב במילים רגילות:\n"
+            "  «תזכיר לי בעוד שעה להתקשר לאמא»\n"
+            "  «מה יש ב-WhatsApp?»\n"
+            "  «הוסף מטרה ארוכת טווח: ללמוד איטלקית»"
+        ),
+        "help.short_text": (
+            "פקודות עם /, או פשוט תכתוב במילים רגילות.\n"
+            "/dashboard, /tasks, /settings, /profile, /group_list — הבסיס.\n"
+            "/help — רשימה מלאה."
+        ),
+        # ─── Groups (Phase H) ──────────────────────────────────────────────
+        "groups.created": "👥 הקבוצה «{name}» נוצרה (id={group_id}).",
+        "groups.list_header": "👥 *הקבוצות שלך:*",
+        "groups.list_empty": "אינך בקבוצה כרגע. צור עם /group_create <שם>.",
+        "groups.list_item": "  {group_id}. {name} — {role}, חברים: {member_count}",
+        "groups.list_item_pending": "  {group_id}. {name} — הזמנה ממתינה",
+        "groups.members_header": "👥 *חברים בקבוצה «{name}»:*",
+        "groups.member_admin": "  • {display} ({username}) — מנהל",
+        "groups.member_normal": "  • {display} ({username}) — חבר",
+        "groups.member_pending": "  • {display} ({username}) — הוזמן, טרם אישר",
+        "groups.invite_sent_to_user": "✉️ הזמנה נשלחה ל-@{username}.",
+        "groups.invite_link_ready": "✉️ שתף את הקישור עם @{username} (אינו עדיין בבוט):\n{link}",
+        "groups.invite_notice": "👋 {inviter} מזמין אותך לקבוצה «{group_name}». להצטרף?",
+        "groups.invite_already_member": "המשתמש כבר בקבוצה.",
+        "groups.invite_already_invited": "כבר הוזמן — בהמתנה לתשובה.",
+        "groups.accept": "✅ אישור",
+        "groups.decline": "❌ דחייה",
+        "groups.accepted": "✅ הצטרפת ל-«{name}».",
+        "groups.declined": "❌ ההזמנה נדחתה.",
+        "groups.removed": "🗑 חבר הוסר.",
+        "groups.left": "👋 יצאת מהקבוצה.",
+        "groups.promoted": "⬆️ כעת מנהל.",
+        "groups.demoted": "⬇️ כבר לא מנהל.",
+        "groups.renamed": "✏️ הקבוצה שונתה ל-«{name}».",
+        "groups.deleted": "🗑 הקבוצה נמחקה. המטרות המשותפות הפכו לאישיות.",
+        "groups.added_via_invite": "👥 נוספת לקבוצה «{group_name}».",
+        "groups.usage.create": "שימוש: /group_create <שם>",
+        "groups.usage.members": "שימוש: /group_members <id קבוצה>",
+        "groups.usage.invite": "שימוש: /group_invite <id קבוצה> <@username>",
+        "groups.usage.remove": "שימוש: /group_remove <id קבוצה> <user_id>",
+        "groups.usage.leave": "שימוש: /group_leave <id קבוצה>",
+        "groups.usage.promote": "שימוש: /group_promote <id קבוצה> <user_id>",
+        "groups.usage.demote": "שימוש: /group_demote <id קבוצה> <user_id>",
+        "groups.usage.rename": "שימוש: /group_rename <id קבוצה> <שם חדש>",
+        "groups.usage.delete": "שימוש: /group_delete <id קבוצה>",
+        "groups.error.not_found": "הקבוצה לא נמצאה.",
+        "groups.error.not_admin": "רק מנהל הקבוצה יכול לעשות זאת.",
+        "groups.error.not_member": "אינך חבר בקבוצה זו.",
+        "groups.error.user_not_found": "המשתמש לא נמצא.",
+        "groups.error.value": "נכשל: {reason}",
+        "groups.error.invite_token_invalid": "קישור ההזמנה אינו תקין.",
+        "groups.error.invite_token_expired": "קישור ההזמנה פג תוקף (מעל 7 ימים).",
     },
 }
 

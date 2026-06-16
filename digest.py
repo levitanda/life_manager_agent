@@ -9,6 +9,22 @@ import config
 import llm
 
 
+# ─── Phase I: help reminder injected at the end of every morning digest ───
+# Two variants per language. We pick the long form during onboarding (first
+# few digests so the user learns about /help) and the short form afterward.
+# Each string is `.format(name=...)`'d, so {name} is required.
+HELP_REMINDER_FULL = {
+    "ru": "Если что-то нужно добавить или вспомнить мои команды — напиши /help. Хорошего дня, {name}!",
+    "en": "If you need to add anything or recall my commands — type /help. Have a great day, {name}!",
+    "he": "רוצה לראות את כל הפקודות שלי? תכתוב /help. יום נפלא, {name}!",
+}
+HELP_REMINDER_SHORT = {
+    "ru": "Привычный день. /help если что.",
+    "en": "Same as always. /help if you need.",
+    "he": "יום רגיל. /help אם תצטרך.",
+}
+
+
 def _format_events(events: list[dict]) -> str:
     if not events:
         return "Нет запланированных событий."
@@ -87,6 +103,24 @@ def _format_summaries(summaries: list[dict]) -> str:
     return "\n\n".join(lines)
 
 
+def _format_shared_goals(goals: list[dict]) -> str:
+    """Render shared-goals attribution: who's on each goal and who last
+    moved the needle. Empty string if there are no shared goals."""
+    if not goals:
+        return ""
+    lines = []
+    for g in goals:
+        members = ", ".join(g.get("members") or [])
+        last_by = g.get("last_progress_by")
+        bits = [f"• {g.get('title','?')}"]
+        if members:
+            bits.append(f"shared with: {members}")
+        if last_by:
+            bits.append(f"last progress by: {last_by}")
+        lines.append(" — ".join(bits))
+    return "\n".join(lines)
+
+
 def generate_morning_digest(
     calendar_events: list[dict],
     short_tasks: list[dict],
@@ -103,6 +137,8 @@ def generate_morning_digest(
     *,
     user_name: Optional[str] = None,
     user_timezone: Optional[str] = None,
+    user_language: str = "ru",
+    shared_goals: Optional[list[dict]] = None,
 ) -> str:
     name = user_name or "пользователя"
     tz = pytz.timezone(user_timezone or config.TIMEZONE)
@@ -140,6 +176,12 @@ def generate_morning_digest(
         f"\n=== ДОЛГОСРОЧНАЯ ПАМЯТЬ (резюме прошлых сессий) ===\n{summaries_text}\n"
         if summaries_text else ""
     )
+    shared_goals_text = _format_shared_goals(shared_goals or [])
+    shared_goals_section = (
+        "\nОБЩИЕ ЦЕЛИ (вместе с членами групп — упоминай по имени, "
+        "кто двигал прогресс):\n" + shared_goals_text + "\n"
+        if shared_goals_text else ""
+    )
 
     # Build the news block instruction dynamically based on which sources are present
     if news:
@@ -152,6 +194,14 @@ def generate_morning_digest(
         )
     else:
         news_instruction = "7. Новости — раздел отсутствует, пропусти.\n"
+
+    # TODO(phase-I): once we track per-user digest count, switch to
+    # HELP_REMINDER_SHORT when (target_date - first_digest_date) >= 4 days.
+    # For now always inject the FULL reminder.
+    reminder_lang = (user_language or "ru").lower()
+    if reminder_lang not in HELP_REMINDER_FULL:
+        reminder_lang = "ru"
+    help_reminder = HELP_REMINDER_FULL[reminder_lang].format(name=name)
 
     prompt = f"""Ты личный ИИ-ассистент {name}. Составь утренний дайджест на русском языке для {date_str}.
 
@@ -169,7 +219,7 @@ def generate_morning_digest(
 
 ПРОГРЕСС ЗА ВЧЕРА:
 {yesterday_progress or "Нет данных."}
-{weather_section}{birthday_section}{emails_section}{whatsapp_section}{news_section}
+{shared_goals_section}{weather_section}{birthday_section}{emails_section}{whatsapp_section}{news_section}
 Напиши дружелюбный, мотивирующий дайджест. Структура:
 1. Приветствие с датой и погодой; если из недавнего разговора видно что-то важное (настроение, события, переживания) — отрази это в приветствии. Не «доброе утро» в пустоту, а как будто продолжаешь живой разговор.
 2. Если есть дни рождения — обязательно упомяни их тепло
@@ -182,7 +232,9 @@ def generate_morning_digest(
 10. Короткое мотивирующее напутствие — личное, не шаблонное.
 
 Будь конкретным и живым. Если в разговоре было что-то эмоционально важное (заболел, устала, переживает) — обязательно среагируй на это в дайджесте. Не игнорируй контекст. Не повторяй просто список — дай осмысленные рекомендации.
-Если обращаешься к пользователю по имени — используй «{name}»."""
+Если обращаешься к пользователю по имени — используй «{name}».
+
+Завершите дайджест ровно строкой: {help_reminder}"""
 
     result = llm.chat(
         llm.MODEL_SONNET_BEDROCK,

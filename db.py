@@ -144,6 +144,9 @@ class User(Base):
     language: str = Column(Text, default="ru")
     news_country: Optional[str] = Column(Text)
     onboarding_state: str = Column(Text, default="pending")
+    # Phase H: lower-cased Telegram @handle stored at signup so /group_invite
+    # can resolve invitees by their public username.
+    telegram_username: Optional[str] = Column(Text, index=True)
 
     google_token = relationship(
         "GoogleToken", uselist=False, cascade="all, delete-orphan", backref="user"
@@ -260,6 +263,9 @@ class GroupMember(Base):
     joined_at: datetime.datetime = Column(
         DateTime, default=datetime.datetime.utcnow
     )
+    # Phase H: NULL while an invite is pending; filled when the invitee accepts.
+    accepted_at: Optional[datetime.datetime] = Column(DateTime)
+    invited_by: Optional[int] = Column(Integer, ForeignKey("users.id"))
 
 
 class Goal(Base):
@@ -332,16 +338,33 @@ def create_user(
     telegram_chat_id: int,
     display_name: Optional[str] = None,
     timezone: str = "Europe/Moscow",
+    telegram_username: Optional[str] = None,
 ) -> User:
     user = User(
         telegram_user_id=telegram_user_id,
         telegram_chat_id=telegram_chat_id,
         display_name=display_name,
         timezone=timezone,
+        telegram_username=(telegram_username or "").lstrip("@").lower() or None,
     )
     session.add(user)
     session.flush()
     return user
+
+
+def get_user_by_telegram_username(session: Session, username: str) -> Optional[User]:
+    """Resolve a user by Telegram @handle (case-insensitive, leading @ stripped).
+    Returns None if no such user is in the DB."""
+    if not username:
+        return None
+    needle = username.lstrip("@").strip().lower()
+    if not needle:
+        return None
+    return (
+        session.query(User)
+        .filter(User.telegram_username == needle)
+        .one_or_none()
+    )
 
 
 def create_goal(
@@ -376,12 +399,31 @@ def create_goal(
     return goal
 
 
-def create_group(session: Session, name: str, creator_id: int) -> Group:
-    """Create a group and add the creator as admin member."""
-    group = Group(name=name, created_by=creator_id)
+def create_group(
+    session: Session,
+    name: str,
+    creator_id: Optional[int] = None,
+    *,
+    creator_user_id: Optional[int] = None,
+) -> Group:
+    """Create a group and add the creator as admin member.
+
+    Accepts either positional `creator_id` (legacy) or kw-only
+    `creator_user_id` (Phase H) — they mean the same thing.
+    """
+    cid = creator_user_id if creator_user_id is not None else creator_id
+    if cid is None:
+        raise ValueError("creator_user_id is required")
+    group = Group(name=name, created_by=cid)
     session.add(group)
     session.flush()
-    session.add(GroupMember(group_id=group.id, user_id=creator_id, role="admin"))
+    session.add(GroupMember(
+        group_id=group.id,
+        user_id=cid,
+        role="admin",
+        accepted_at=datetime.datetime.utcnow(),
+        invited_by=cid,
+    ))
     session.flush()
     return group
 

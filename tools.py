@@ -800,6 +800,104 @@ def record_goal_progress(
         return _err(f"Не получилось записать: {e}")
 
 
+# ─── Groups (Phase H) ─────────────────────────────────────────────────────────
+
+def create_group(*, name: str, _user_id: Optional[int] = None, **_kwargs) -> dict:
+    """Create a new group with the caller as admin. Returns the new group id."""
+    if _user_id is None:
+        return _err("Группы поддерживаются только для зарегистрированных юзеров.")
+    if not name or not name.strip():
+        return _err("Нужно название группы.")
+    try:
+        import groups as _groups
+        res = _groups.create_group(_user_id, name.strip())
+        return _ok(f"👥 Группа «{res['name']}» создана (id={res['group_id']}).")
+    except ValueError as e:
+        return _err(str(e))
+    except Exception as e:
+        logger.exception("create_group tool failed: %s", e)
+        return _err(f"Не получилось создать группу: {e}")
+
+
+def add_shared_goal(
+    *,
+    group_name: str,
+    title: str,
+    description: Optional[str] = None,
+    category: Optional[str] = None,
+    target_date: Optional[str] = None,
+    _user_id: Optional[int] = None,
+    **_kwargs,
+) -> dict:
+    """Create a goal attached to one of the user's groups.
+
+    Resolves `group_name` (case-insensitive, exact match) to a group id by
+    walking the caller's group memberships, then delegates to db.create_goal.
+    """
+    if _user_id is None:
+        return _err("Цели поддерживаются только для зарегистрированных юзеров.")
+    if not group_name or not group_name.strip():
+        return _err("Нужно название группы.")
+    if not title or not title.strip():
+        return _err("Нужно название цели.")
+    try:
+        td = datetime.date.fromisoformat(target_date) if target_date else None
+    except Exception:
+        td = None
+    try:
+        import db as _db
+        needle = group_name.strip().lower()
+        with _db.session_scope() as s:
+            rows = (
+                s.query(_db.Group)
+                .join(_db.GroupMember, _db.GroupMember.group_id == _db.Group.id)
+                .filter(_db.GroupMember.user_id == _user_id)
+                .filter(_db.GroupMember.accepted_at.isnot(None))
+                .all()
+            )
+            target = None
+            for g in rows:
+                if (g.name or "").lower() == needle:
+                    target = g
+                    break
+            if target is None:
+                return _err(f"Не нашёл группу «{group_name}». Скажи «список групп».")
+            goal = _db.create_goal(
+                s, user_id=_user_id, title=title.strip(),
+                description=description, category=category, target_date=td,
+                group_id=target.id,
+            )
+            return _ok(
+                f"🎯 Общая цель «{goal.title}» добавлена в «{target.name}» (id={goal.id})."
+            )
+    except Exception as e:
+        logger.exception("add_shared_goal tool failed: %s", e)
+        return _err(f"Не получилось добавить цель: {e}")
+
+
+def list_my_groups(*, _user_id: Optional[int] = None, **_kwargs) -> dict:
+    """List groups the caller is a member of (or invited to)."""
+    if _user_id is None:
+        return _err("Группы поддерживаются только для зарегистрированных юзеров.")
+    try:
+        import groups as _groups
+        rows = _groups.list_my_groups(_user_id)
+        if not rows:
+            return _ok("👥 Ты пока не состоишь ни в одной группе.")
+        lines = ["👥 *Твои группы:*"]
+        for r in rows:
+            if r["pending"]:
+                lines.append(f"  {r['group_id']}. {r['name']} — приглашение, ожидает решения")
+            else:
+                lines.append(
+                    f"  {r['group_id']}. {r['name']} — {r['role']}, участников: {r['member_count']}"
+                )
+        return _ok("\n".join(lines))
+    except Exception as e:
+        logger.exception("list_my_groups tool failed: %s", e)
+        return _err(f"Не получилось получить список: {e}")
+
+
 def list_goals(*, _user_id: Optional[int] = None, **_kwargs) -> dict:
     """Return all active goals for the user (including shared via group)."""
     if _user_id is None:
@@ -1304,6 +1402,46 @@ TOOL_SCHEMAS = [
         "description": "Show the user's active long-term goals.",
         "input_schema": {"type": "object", "properties": {}},
     },
+    {
+        "name": "create_group",
+        "description": (
+            "Create a shared group (family / partners / team) the user can "
+            "invite others to. Use when the user says 'создай группу X', "
+            "'добавь группу семья', etc. The caller becomes the admin."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Group name (e.g. 'Семья', 'Project Apollo')"},
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "add_shared_goal",
+        "description": (
+            "Create a long-term goal shared with all members of a group the "
+            "caller belongs to. Use when the user says 'добавь общую цель …', "
+            "'у нас семейная цель …', 'в группе X цель …'. Resolves the group "
+            "by name (case-insensitive)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "group_name": {"type": "string"},
+                "title": {"type": "string"},
+                "description": {"type": "string"},
+                "category": {"type": "string"},
+                "target_date": {"type": "string", "description": "YYYY-MM-DD"},
+            },
+            "required": ["group_name", "title"],
+        },
+    },
+    {
+        "name": "list_my_groups",
+        "description": "Show the user's groups (and any pending invitations).",
+        "input_schema": {"type": "object", "properties": {}},
+    },
 ]
 
 
@@ -1345,4 +1483,7 @@ TOOL_FUNCS = {
     "add_goal": add_goal,
     "record_goal_progress": record_goal_progress,
     "list_goals": list_goals,
+    "create_group": create_group,
+    "add_shared_goal": add_shared_goal,
+    "list_my_groups": list_my_groups,
 }

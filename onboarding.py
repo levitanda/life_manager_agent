@@ -17,6 +17,7 @@ bot_handlers.py.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Optional
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -24,6 +25,43 @@ from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
 logger = logging.getLogger(__name__)
+
+_INVITE_ARG_RE = re.compile(r"^invite_(.+)$")
+
+
+async def _handle_invite_token(update, context, user_id: int, token: str, lang: str) -> None:
+    """Verify a group-invite token and add the user to the group.
+
+    Called from `cmd_start` when the start payload is `invite_<token>`.
+    """
+    try:
+        import groups
+        from i18n import t
+
+        payload = groups.verify_invite_token(token)
+        group_id = int(payload["group_id"])
+        group_name = groups.add_user_to_group_via_invite(user_id, group_id)
+        await update.effective_message.reply_text(
+            t("groups.added_via_invite", lang, group_name=group_name),
+        )
+    except groups.InviteTokenError as e:  # type: ignore[name-defined]
+        from i18n import t
+        msg = t("groups.error.invite_token_invalid", lang)
+        if "expired" in str(e).lower():
+            msg = t("groups.error.invite_token_expired", lang)
+        try:
+            await update.effective_message.reply_text(msg)
+        except Exception:
+            pass
+    except Exception as e:
+        logger.warning("invite token handling failed: %s", e)
+        try:
+            from i18n import t
+            await update.effective_message.reply_text(
+                t("groups.error.invite_token_invalid", lang)
+            )
+        except Exception:
+            pass
 
 
 WELCOME_TEXT = (
@@ -61,6 +99,16 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     tg_chat = update.effective_chat
     name = (tg_user.first_name or tg_user.username or "друг").strip()
 
+    # Phase H: invite-token entrypoint. If the start payload looks like
+    # `/start invite_<token>`, attempt to add the user to a group either now
+    # (if they already have access) or right after onboarding completes.
+    invite_token: Optional[str] = None
+    raw_args = list(getattr(context, "args", None) or [])
+    if raw_args:
+        m = _INVITE_ARG_RE.match(raw_args[0])
+        if m:
+            invite_token = m.group(1)
+
     with db.session_scope() as s:
         user = db.get_user_by_telegram_id(s, tg_user.id)
         if user is None:
@@ -69,9 +117,21 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 telegram_user_id=tg_user.id,
                 telegram_chat_id=tg_chat.id,
                 display_name=name,
+                telegram_username=tg_user.username,
             )
+        else:
+            # Refresh the username on each /start so existing rows pick up
+            # the value the first time we deploy this code path.
+            if tg_user.username and not user.telegram_username:
+                user.telegram_username = tg_user.username.lstrip("@").lower()
         was_active = user.has_access()
         user_id = user.id
+        lang = user.language or "ru"
+
+    if invite_token:
+        await _handle_invite_token(update, context, user_id, invite_token, lang)
+        if was_active:
+            return
 
     if was_active:
         await update.effective_message.reply_text(
@@ -111,6 +171,7 @@ async def cmd_promo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 telegram_user_id=tg_user.id,
                 telegram_chat_id=update.effective_chat.id,
                 display_name=(tg_user.first_name or tg_user.username or None),
+                telegram_username=tg_user.username,
             )
         ok, msg = db.redeem_promo(s, user, code)
         was_active = user.has_access()
