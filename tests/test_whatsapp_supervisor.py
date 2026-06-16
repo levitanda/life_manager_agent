@@ -275,6 +275,73 @@ def test_mark_running_flips_status():
         assert s.get(db.WhatsAppBridge, user_id).status == "running"
 
 
+# ─── pair-code idempotency ────────────────────────────────────────────────────
+
+
+def test_request_pairing_code_reuses_existing_live_code(monkeypatch):
+    """If pair-mode bridge already runs and /pair returns 200 with a code,
+    don't cold-restart — that would invalidate the code the user is typing."""
+    import whatsapp_supervisor, db
+    user_id = _make_user(1)
+    with db.session_scope() as s:
+        s.add(db.WhatsAppBridge(user_id=user_id, port=3031, auth_dir="x", status="qr_pending"))
+    # Fake live bridge process
+    whatsapp_supervisor._processes[user_id] = _mock_popen(pid=99, poll_return=None)
+
+    pair_resp = MagicMock()
+    pair_resp.status_code = 200
+    pair_resp.json.return_value = {"code": "WXYZ-9999"}
+
+    with patch("requests.post", return_value=pair_resp) as mock_post, \
+         patch.object(whatsapp_supervisor, "start_bridge") as mock_start:
+        result = whatsapp_supervisor.request_pairing_code(user_id, "972500000000")
+
+    assert result == {"ok": True, "code": "WXYZ-9999"}
+    mock_start.assert_not_called()
+    mock_post.assert_called_once()
+
+
+def test_request_pairing_code_cold_starts_when_no_live_bridge(monkeypatch):
+    import whatsapp_supervisor, db
+    user_id = _make_user(1)
+    with db.session_scope() as s:
+        s.add(db.WhatsAppBridge(user_id=user_id, port=3031, auth_dir="x", status="stopped"))
+    # No process registered — supervisor should cold-start.
+    whatsapp_supervisor._processes.pop(user_id, None)
+
+    pair_resp = MagicMock()
+    pair_resp.status_code = 200
+    pair_resp.json.return_value = {"code": "ABCD-1234"}
+
+    with patch("requests.post", return_value=pair_resp), \
+         patch.object(whatsapp_supervisor, "start_bridge", return_value=3031) as mock_start:
+        result = whatsapp_supervisor.request_pairing_code(user_id, "972500000000")
+
+    assert result == {"ok": True, "code": "ABCD-1234"}
+    mock_start.assert_called_once_with(user_id, pair_phone="972500000000")
+
+
+def test_request_pairing_code_already_paired_does_not_restart():
+    """If WA already considers this device paired, return that — never
+    cold-restart, since that would wipe the working session."""
+    import whatsapp_supervisor, db
+    user_id = _make_user(1)
+    with db.session_scope() as s:
+        s.add(db.WhatsAppBridge(user_id=user_id, port=3031, auth_dir="x", status="running"))
+    whatsapp_supervisor._processes[user_id] = _mock_popen(pid=99, poll_return=None)
+
+    pair_resp = MagicMock()
+    pair_resp.status_code = 409
+
+    with patch("requests.post", return_value=pair_resp), \
+         patch.object(whatsapp_supervisor, "start_bridge") as mock_start:
+        result = whatsapp_supervisor.request_pairing_code(user_id, "972500000000")
+
+    assert result["ok"] is False
+    assert result.get("already_paired") is True
+    mock_start.assert_not_called()
+
+
 # ─── disable_for_user (cleanup on access loss) ────────────────────────────────
 
 

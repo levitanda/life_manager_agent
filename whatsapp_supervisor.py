@@ -263,11 +263,65 @@ def get_qr(user_id: int, timeout_seconds: float = 30.0) -> Optional[str]:
     return None
 
 
+def _probe_existing_pair_bridge(user_id: int) -> Optional[dict]:
+    """If a bridge for this user is already alive in pair mode, peek at
+    its /pair endpoint without disturbing it.
+
+    Returns one of:
+      {"ok": True, "code": "ABCD-1234"} — reuse the in-flight code
+      {"ok": False, "already_paired": True} — bridge says it's already done
+      None — no live pair-mode bridge (caller should cold-start)
+    """
+    import requests
+    import db
+    p = _processes.get(user_id)
+    if p is None or p.poll() is not None:
+        return None
+    with db.session_scope() as s:
+        row = s.get(db.WhatsAppBridge, user_id)
+        if row is None:
+            return None
+        port = int(row.port)
+    try:
+        r = requests.post(f"http://127.0.0.1:{port}/pair", timeout=3)
+    except Exception:
+        return None
+    if r.status_code == 200:
+        try:
+            data = r.json()
+        except Exception:
+            return None
+        code = data.get("code") or data.get("raw")
+        if code:
+            return {"ok": True, "code": code}
+        return None
+    if r.status_code == 409:
+        return {"ok": False, "already_paired": True, "error": "already paired"}
+    if r.status_code == 503:
+        try:
+            err = r.json().get("error")
+        except Exception:
+            err = None
+        # 'code_pending' means bridge IS in pair mode but hasn't received
+        # the code from WA yet — caller should poll, not restart.
+        if err == "code_pending":
+            return {"ok": False, "in_progress": True}
+        # 'pair_mode_not_initialized' means this bridge wasn't spawned with
+        # BRIDGE_PAIR_PHONE — we need a cold restart.
+    return None
+
+
 def request_pairing_code(user_id: int, phone: str, timeout_seconds: float = 45.0) -> dict:
     """Pair user `user_id` to WhatsApp number `phone` using the 8-char code flow.
 
-    Cold-restarts the bridge with BRIDGE_PAIR_PHONE so Baileys requests the
-    code before attempting QR; polls /pair until the code appears.
+    Idempotent across rapid duplicate clicks: if a pair-mode bridge is
+    already alive and either has a valid code or is still warming up, we
+    reuse it instead of cold-restarting. Killing the bridge mid-flow would
+    invalidate the code the user already sees, so WhatsApp would reject it
+    on entry.
+
+    Cold-starts the bridge with BRIDGE_PAIR_PHONE only when there is no
+    live pair-mode bridge. Polls /pair until the code appears.
 
     Returns one of:
       {"ok": True, "code": "ABCD-1234"}
@@ -275,10 +329,25 @@ def request_pairing_code(user_id: int, phone: str, timeout_seconds: float = 45.0
       {"ok": False, "error": "<reason>"}
     """
     import requests
-    try:
-        port = start_bridge(user_id, pair_phone=phone)
-    except Exception as e:
-        return {"ok": False, "error": f"bridge start failed: {e}"}
+
+    # Idempotency: if a pair-mode bridge for this user is already alive,
+    # honor its in-flight code instead of cold-restarting (which would
+    # invalidate any code the user is currently typing into WhatsApp).
+    existing = _probe_existing_pair_bridge(user_id)
+    if existing is not None and (existing.get("ok") or existing.get("already_paired")):
+        return existing
+
+    if existing is None:
+        try:
+            port = start_bridge(user_id, pair_phone=phone)
+        except Exception as e:
+            return {"ok": False, "error": f"bridge start failed: {e}"}
+    else:
+        # in_progress — same bridge, just look up the port and poll /pair
+        import db
+        with db.session_scope() as s:
+            row = s.get(db.WhatsAppBridge, user_id)
+            port = int(row.port)
 
     url = f"http://127.0.0.1:{port}"
     deadline = time.monotonic() + timeout_seconds
@@ -306,6 +375,8 @@ def request_pairing_code(user_id: int, phone: str, timeout_seconds: float = 45.0
             continue
         time.sleep(1)
     return {"ok": False, "error": last_err or "timeout"}
+
+
 
 
 def restore_running_bridges() -> int:
