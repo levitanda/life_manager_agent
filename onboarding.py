@@ -22,7 +22,14 @@ from typing import Optional
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
-from telegram.ext import ContextTypes
+from telegram.ext import (
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    ConversationHandler,
+    MessageHandler,
+    filters,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -91,8 +98,17 @@ def _start_keyboard() -> InlineKeyboardMarkup:
 # ─── /start ───────────────────────────────────────────────────────────────────
 
 
-async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Greet the user, ensure a DB row exists, prompt for subscription/promo."""
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Greet the user, ensure a DB row exists, prompt for subscription/promo.
+
+    Flow split:
+      - No row yet → create row, show welcome+promo prompt (pre-promo gate)
+      - Row exists, no access → show welcome+promo prompt
+      - Row exists, has access, onboarding_state == "completed"
+            → brief "С возвращением"
+      - Row exists, has access, onboarding_state != "completed"
+            → enter the 12-step wizard (Phase E)
+    """
     import db
 
     tg_user = update.effective_user
@@ -125,32 +141,42 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             if tg_user.username and not user.telegram_username:
                 user.telegram_username = tg_user.username.lstrip("@").lower()
         was_active = user.has_access()
+        onboarding_done = (getattr(user, "onboarding_state", None) == "completed")
         user_id = user.id
         lang = user.language or "ru"
 
     if invite_token:
         await _handle_invite_token(update, context, user_id, invite_token, lang)
-        if was_active:
+        if was_active and onboarding_done:
             return
 
-    if was_active:
+    if was_active and onboarding_done:
         await update.effective_message.reply_text(
             f"С возвращением, {name}! 🙂 Доступ активен — пиши что нужно.",
         )
-        return
+        return ConversationHandler.END
+
+    if was_active and not onboarding_done:
+        # Jony-path: existing user with promo/active but no wizard yet.
+        import onboarding_wizard
+        return await onboarding_wizard.start_wizard(update, context, mode="onboarding")
 
     await update.effective_message.reply_text(
         WELCOME_TEXT,
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=_start_keyboard(),
     )
+    return ConversationHandler.END
 
 
 # ─── /promo CODE ──────────────────────────────────────────────────────────────
 
 
-async def cmd_promo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Apply a promo code to the user. Creates the user row on the fly if needed."""
+async def cmd_promo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Apply a promo code to the user. Creates the user row on the fly if needed.
+
+    On successful redemption, enters the 12-step wizard (Phase E).
+    """
     import db
 
     if not context.args:
@@ -158,7 +184,7 @@ async def cmd_promo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "Использование: `/promo КОД`",
             parse_mode=ParseMode.MARKDOWN,
         )
-        return
+        return ConversationHandler.END
 
     code = " ".join(context.args).strip()
     tg_user = update.effective_user
@@ -175,10 +201,13 @@ async def cmd_promo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             )
         ok, msg = db.redeem_promo(s, user, code)
         was_active = user.has_access()
+        onboarding_done = (getattr(user, "onboarding_state", None) == "completed")
 
     await update.effective_message.reply_text(msg)
-    if ok and was_active:
-        await _send_post_subscribe_steps(update, context)
+    if ok and was_active and not onboarding_done:
+        import onboarding_wizard
+        return await onboarding_wizard.start_wizard(update, context, mode="onboarding")
+    return ConversationHandler.END
 
 
 # ─── /subscribe ───────────────────────────────────────────────────────────────
@@ -223,37 +252,126 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         )
 
 
-# ─── Post-subscribe / post-promo nudge ───────────────────────────────────────
+# ─── /profile (Phase F: re-onboarding) ───────────────────────────────────────
 
 
-GOOGLE_AUTH_PROMPT = (
-    "🎉 Доступ открыт. Следующий шаг — подключи Google аккаунт "
-    "(календарь, Gmail, дневник в Docs):\n\n"
-    "{url}\n\n"
-    "После авторизации возвращайся в этот чат — настроим часовой пояс и время дайджеста."
-)
+async def cmd_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Re-enter the wizard in profile mode for an existing user.
 
-
-async def _send_post_subscribe_steps(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """After subscription/promo activates, show the next setup step."""
-    import os
-    import web
-
-    user_id = update.effective_user.id  # caller already ensured user exists
-    # Resolve our internal user_id
+    Profile mode shows each step with the current value plus
+    Keep/Change buttons so users can selectively re-edit fields.
+    """
     import db
+    tg_user = update.effective_user
     with db.session_scope() as s:
-        u = db.get_user_by_telegram_id(s, user_id)
-        if u is None:
-            return
-        internal_id = u.id
+        user = db.get_user_by_telegram_id(s, tg_user.id)
+        if user is None:
+            await update.effective_message.reply_text(
+                "Сначала /start — мы ещё не знакомы.",
+            )
+            return ConversationHandler.END
+        if not user.has_access():
+            await update.effective_message.reply_text(
+                "🔒 Подписка неактивна. Используй /promo КОД или /subscribe."
+            )
+            return ConversationHandler.END
 
-    base = os.environ.get("PUBLIC_BASE_URL", "https://dalev.click")
-    state = web.sign_state(internal_id)
-    url = f"{base}/oauth/start?state={state}"
-    await update.effective_message.reply_text(
-        GOOGLE_AUTH_PROMPT.format(url=url),
+    import onboarding_wizard
+    return await onboarding_wizard.start_wizard(update, context, mode="profile")
+
+
+# ─── ConversationHandler factory ──────────────────────────────────────────────
+
+
+def build_wizard_conversation_handler() -> ConversationHandler:
+    """Return the ConversationHandler that drives both /start (new user
+    onboarding) and /profile (existing user re-edit).
+
+    Entry points: /start, /promo (after redemption), /profile.
+    Each state has button + text fall-backs as needed.
+    """
+    import onboarding_wizard as w
+
+    states = {
+        w.STEP_LANGUAGE: [
+            CallbackQueryHandler(w.step_language_handle, pattern=r"^wiz:lang:"),
+            CallbackQueryHandler(w.cb_keep_or_change, pattern=r"^wiz:(keep|change):"),
+        ],
+        w.STEP_NAME: [
+            CallbackQueryHandler(w.step_name_handle_button, pattern=r"^wiz:name:use_first"),
+            CallbackQueryHandler(w.cb_keep_or_change, pattern=r"^wiz:(keep|change):"),
+            MessageHandler(filters.TEXT & ~filters.COMMAND, w.step_name_handle_text),
+        ],
+        w.STEP_CITY: [
+            CallbackQueryHandler(w.cb_keep_or_change, pattern=r"^wiz:(keep|change):"),
+            MessageHandler(filters.TEXT & ~filters.COMMAND, w.step_city_handle_text),
+        ],
+        w.STEP_TIMEZONE: [
+            CallbackQueryHandler(w.step_timezone_handle_button, pattern=r"^wiz:tz:"),
+            CallbackQueryHandler(w.cb_keep_or_change, pattern=r"^wiz:(keep|change):"),
+            MessageHandler(filters.TEXT & ~filters.COMMAND, w.step_timezone_handle_text),
+        ],
+        w.STEP_MORNING_TIME: [
+            CallbackQueryHandler(w.step_time_handle_button, pattern=r"^wiz:time:"),
+            CallbackQueryHandler(w.cb_keep_or_change, pattern=r"^wiz:(keep|change):"),
+            MessageHandler(filters.TEXT & ~filters.COMMAND, w.step_time_handle_text),
+        ],
+        w.STEP_EVENING_TIME: [
+            CallbackQueryHandler(w.step_time_handle_button, pattern=r"^wiz:time:"),
+            CallbackQueryHandler(w.cb_keep_or_change, pattern=r"^wiz:(keep|change):"),
+            MessageHandler(filters.TEXT & ~filters.COMMAND, w.step_time_handle_text),
+        ],
+        w.STEP_GOOGLE: [
+            CallbackQueryHandler(w.step_google_handle_button, pattern=r"^wiz:google:"),
+            CallbackQueryHandler(w.cb_keep_or_change, pattern=r"^wiz:(keep|change):"),
+        ],
+        w.STEP_NEWS: [
+            CallbackQueryHandler(w.step_news_handle_button, pattern=r"^wiz:news:"),
+            CallbackQueryHandler(w.cb_keep_or_change, pattern=r"^wiz:(keep|change):"),
+            MessageHandler(filters.TEXT & ~filters.COMMAND, w.step_news_handle_text),
+        ],
+        w.STEP_PERSONALITY: [
+            CallbackQueryHandler(w.step_personality_handle_button, pattern=r"^wiz:persona:"),
+            CallbackQueryHandler(w.cb_keep_or_change, pattern=r"^wiz:(keep|change):"),
+        ],
+        w.STEP_FIRST_TASK: [
+            CallbackQueryHandler(w.step_first_task_handle_skip, pattern=r"^wiz:skip:task"),
+            MessageHandler(filters.TEXT & ~filters.COMMAND, w.step_first_task_handle_text),
+        ],
+        w.STEP_FIRST_GOAL: [
+            CallbackQueryHandler(w.step_first_goal_handle_skip, pattern=r"^wiz:skip:goal"),
+            MessageHandler(filters.TEXT & ~filters.COMMAND, w.step_first_goal_handle_text),
+        ],
+        w.STEP_INTEGRATIONS: [
+            CallbackQueryHandler(w.step_integrations_handle_done, pattern=r"^wiz:integrations:done"),
+        ],
+    }
+
+    return ConversationHandler(
+        entry_points=[
+            CommandHandler("start", cmd_start),
+            CommandHandler("promo", cmd_promo),
+            CommandHandler("profile", cmd_profile),
+        ],
+        states=states,
+        fallbacks=[
+            CommandHandler("cancel", _wizard_cancel),
+        ],
+        # Allow re-entry so /profile while inside the wizard restarts it.
+        allow_reentry=True,
+        per_user=True,
     )
+
+
+async def _wizard_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Exit the wizard early. Does NOT clear partially-written fields."""
+    if context.user_data is not None:
+        context.user_data.pop("wizard", None)
+    try:
+        await update.effective_message.reply_text("Отменено.")
+    except Exception:
+        pass
+    return ConversationHandler.END
 
 
 # ─── Callback handler for the welcome keyboard ───────────────────────────────

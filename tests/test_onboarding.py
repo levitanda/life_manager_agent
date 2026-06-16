@@ -32,6 +32,9 @@ def _mk_update(telegram_id: int = 42, args: list[str] | None = None):
     upd.effective_user.username = "tester"
     upd.effective_chat.id = telegram_id
     upd.effective_message.reply_text = AsyncMock()
+    # The wizard handler probes callback_query — keep it None unless the test
+    # is exercising a callback path.
+    upd.callback_query = None
     return upd
 
 
@@ -64,10 +67,14 @@ async def test_start_creates_user_and_shows_welcome():
 
 @pytest.mark.asyncio
 async def test_start_returning_active_user_skips_welcome():
+    """User with onboarding_state='completed' gets the brief return greeting.
+    (Phase E: pre-completed users with access drop into the wizard, not the
+    greeting — see test_phase_ef_wizard.py.)"""
     import onboarding, db
     with db.session_scope() as s:
         u = db.create_user(s, telegram_user_id=42, telegram_chat_id=42, display_name="X")
         u.subscription_status = "active"
+        u.onboarding_state = "completed"
 
     upd = _mk_update(42)
     await onboarding.cmd_start(upd, _mk_context())
@@ -81,6 +88,7 @@ async def test_start_returning_promo_user_skips_welcome():
     with db.session_scope() as s:
         u = db.create_user(s, telegram_user_id=42, telegram_chat_id=42)
         u.subscription_status = "promo"
+        u.onboarding_state = "completed"
     upd = _mk_update(42)
     await onboarding.cmd_start(upd, _mk_context())
     text = upd.effective_message.reply_text.call_args[0][0]

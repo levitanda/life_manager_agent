@@ -1438,8 +1438,10 @@ def register_handlers(app: Application) -> None:
 
     # New onboarding / billing commands — keep these BEFORE the catch-all
     # text handler so they don't get eaten.
-    app.add_handler(CommandHandler("start", onboarding.cmd_start))
-    app.add_handler(CommandHandler("promo", onboarding.cmd_promo))
+    # The wizard ConversationHandler owns /start, /promo, /profile so they
+    # can drive the 12-step state machine. Standalone /subscribe and /cancel
+    # are unrelated commands.
+    app.add_handler(onboarding.build_wizard_conversation_handler())
     app.add_handler(CommandHandler("subscribe", onboarding.cmd_subscribe))
     app.add_handler(CommandHandler("cancel", onboarding.cmd_cancel))
     app.add_handler(CallbackQueryHandler(onboarding.cb_onboard, pattern="^onboard:"))
