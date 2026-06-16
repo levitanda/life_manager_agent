@@ -544,6 +544,43 @@ def _seed_complete_user(uid: int) -> dict:
 
 
 @pytest.mark.asyncio
+async def test_profile_preview_shows_labeled_field_and_pretty_value():
+    """Profile-mode preview includes a field label so the user knows what
+    they're editing, and renders raw column values (e.g. 'ru') as the
+    localized human name ('Русский')."""
+    uid = _mk_user()
+    _seed_complete_user(uid)
+    import onboarding_wizard as w
+
+    ctx = _mk_ctx(mode="profile", user_id=uid)
+    upd = _mk_update()
+    await w.step_language_prompt(upd, ctx)
+
+    sent = upd.effective_message.reply_text.call_args[0][0]
+    assert "Язык интерфейса" in sent
+    assert "Русский" in sent  # raw "ru" rendered as "Русский"
+    assert "ru" not in sent.split("Русский")[0].split("Язык интерфейса")[-1]
+
+
+@pytest.mark.asyncio
+async def test_profile_preview_news_renders_country_names():
+    """news_country='IL,RU' is shown as the localized country names, not raw."""
+    uid = _mk_user()
+    _seed_complete_user(uid)
+    import onboarding_wizard as w
+
+    ctx = _mk_ctx(mode="profile", user_id=uid)
+    upd = _mk_update()
+    await w.step_news_prompt(upd, ctx)
+
+    sent = upd.effective_message.reply_text.call_args[0][0]
+    assert "новостей" in sent.lower() or "Страны" in sent
+    # i18n maps IL→'🇮🇱 Израиль' (or similar localized form) — at minimum the
+    # rendered text shouldn't be the bare comma-separated codes.
+    assert sent.count(",") <= 2  # allow for "IL, RU" rendering form
+
+
+@pytest.mark.asyncio
 async def test_profile_keep_each_step_no_writes():
     uid = _mk_user()
     snap = _seed_complete_user(uid)

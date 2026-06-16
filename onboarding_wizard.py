@@ -35,6 +35,7 @@ from typing import Optional
 
 import pytz
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.constants import ParseMode
 from telegram.ext import ConversationHandler
 
 logger = logging.getLogger(__name__)
@@ -193,6 +194,7 @@ async def step_language_prompt(update: Update, context) -> int:
     if w.get("mode") == "profile":
         return await _maybe_profile_preview(
             update, context, STEP_LANGUAGE, "language", _step_lang_ask,
+            label_key="wizard.profile.label.language",
         )
     return await _step_lang_ask(update, context)
 
@@ -258,20 +260,46 @@ def _current_value(user_id: Optional[int], field: str) -> Optional[str]:
         return None
 
 
+_LANGUAGE_DISPLAY = {"ru": "Русский", "en": "English", "he": "עברית"}
+
+
+def _format_field_value(field: str, value, lang: str) -> str:
+    """Render a raw users-column value into something human readable."""
+    if value is None or value == "":
+        return "—"
+    if field == "language":
+        return _LANGUAGE_DISPLAY.get(value, value)
+    if field == "news_country":
+        try:
+            parts = [p.strip() for p in str(value).split(",") if p.strip()]
+            named = [_t(f"wizard.news.preset.{p}", lang) for p in parts]
+            return ", ".join(named) if named else str(value)
+        except Exception:
+            return str(value)
+    return str(value)
+
+
 async def _maybe_profile_preview(
     update: Update, context, step_id: int, field: str, ask_fn,
+    *, label_key: str,
 ) -> int:
-    """In profile mode, show "Currently: X [Keep][Change]" before the actual
-    collection UI. In onboarding mode, fall straight through to ask_fn.
+    """In profile mode, show "<label>\\nCurrently: X [Keep][Change]" before the
+    actual collection UI. In onboarding mode, fall straight through to ask_fn.
     """
     w = _wizard_state(context)
     if w.get("mode") != "profile":
         return await ask_fn(update, context)
     lang = _resolve_lang(context)
     value = _current_value(w.get("user_id"), field)
-    pretty = value if value is not None else "—"
-    text = _t("wizard.profile.current_is", lang, value=pretty)
-    await _send(update, text, reply_markup=_keep_change_keyboard(lang, step_id))
+    pretty = _format_field_value(field, value, lang)
+    label = _t(label_key, lang)
+    current_line = _t("wizard.profile.current_is", lang, value=pretty)
+    await _send(
+        update,
+        f"*{label}*\n{current_line}",
+        reply_markup=_keep_change_keyboard(lang, step_id),
+        parse_mode=ParseMode.MARKDOWN,
+    )
     w["step"] = step_id
     return step_id
 
@@ -295,6 +323,7 @@ async def step_name_prompt(update: Update, context) -> int:
     if w.get("mode") == "profile":
         return await _maybe_profile_preview(
             update, context, STEP_NAME, "display_name", _step_name_ask,
+            label_key="wizard.profile.label.name",
         )
     return await _step_name_ask(update, context)
 
@@ -339,6 +368,7 @@ async def step_city_prompt(update: Update, context) -> int:
     if w.get("mode") == "profile":
         return await _maybe_profile_preview(
             update, context, STEP_CITY, "city", _step_city_ask,
+            label_key="wizard.profile.label.city",
         )
     return await _step_city_ask(update, context)
 
@@ -390,6 +420,7 @@ async def step_timezone_prompt(update: Update, context) -> int:
     if w.get("mode") == "profile":
         return await _maybe_profile_preview(
             update, context, STEP_TIMEZONE, "timezone", _step_timezone_ask,
+            label_key="wizard.profile.label.timezone",
         )
     return await _step_timezone_ask(update, context)
 
@@ -456,6 +487,7 @@ async def step_morning_time_prompt(update: Update, context) -> int:
     if w.get("mode") == "profile":
         return await _maybe_profile_preview(
             update, context, STEP_MORNING_TIME, "morning_time", _step_morning_ask,
+            label_key="wizard.profile.label.morning_time",
         )
     return await _step_morning_ask(update, context)
 
@@ -478,6 +510,7 @@ async def step_evening_time_prompt(update: Update, context) -> int:
     if w.get("mode") == "profile":
         return await _maybe_profile_preview(
             update, context, STEP_EVENING_TIME, "evening_time", _step_evening_ask,
+            label_key="wizard.profile.label.evening_time",
         )
     return await _step_evening_ask(update, context)
 
@@ -575,9 +608,15 @@ async def step_google_prompt(update: Update, context) -> int:
                     connected = s.get(db.GoogleToken, user_id) is not None
             except Exception:
                 pass
-        current = "Google ✅" if connected else "Google ⚪"
-        text = _t("wizard.profile.current_is", lang, value=current)
-        await _send(update, text, reply_markup=_keep_change_keyboard(lang, STEP_GOOGLE))
+        current = "✅" if connected else "⚪"
+        label = _t("wizard.profile.label.google", lang)
+        current_line = _t("wizard.profile.current_is", lang, value=current)
+        await _send(
+            update,
+            f"*{label}*\n{current_line}",
+            reply_markup=_keep_change_keyboard(lang, STEP_GOOGLE),
+            parse_mode=ParseMode.MARKDOWN,
+        )
         return STEP_GOOGLE
     return await _step_google_ask(update, context)
 
@@ -636,9 +675,16 @@ async def step_news_prompt(update: Update, context) -> int:
     # Show the current set as a comma-joined string instead.
     if w.get("mode") == "profile":
         lang = _resolve_lang(context)
-        current = _current_value(w.get("user_id"), "news_country") or "—"
-        text = _t("wizard.profile.current_is", lang, value=current)
-        await _send(update, text, reply_markup=_keep_change_keyboard(lang, STEP_NEWS))
+        raw = _current_value(w.get("user_id"), "news_country")
+        pretty = _format_field_value("news_country", raw, lang)
+        label = _t("wizard.profile.label.news", lang)
+        current_line = _t("wizard.profile.current_is", lang, value=pretty)
+        await _send(
+            update,
+            f"*{label}*\n{current_line}",
+            reply_markup=_keep_change_keyboard(lang, STEP_NEWS),
+            parse_mode=ParseMode.MARKDOWN,
+        )
         return STEP_NEWS
     return await _step_news_ask(update, context)
 
@@ -774,8 +820,14 @@ async def step_personality_prompt(update: Update, context) -> int:
                     current = persona.get("name", "—")
             except Exception:
                 pass
-        text = _t("wizard.profile.current_is", lang, value=current)
-        await _send(update, text, reply_markup=_keep_change_keyboard(lang, STEP_PERSONALITY))
+        label = _t("wizard.profile.label.personality", lang)
+        current_line = _t("wizard.profile.current_is", lang, value=current)
+        await _send(
+            update,
+            f"*{label}*\n{current_line}",
+            reply_markup=_keep_change_keyboard(lang, STEP_PERSONALITY),
+            parse_mode=ParseMode.MARKDOWN,
+        )
         return STEP_PERSONALITY
     return await _step_personality_ask(update, context)
 
