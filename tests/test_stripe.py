@@ -167,6 +167,90 @@ def test_event_subscription_updated_does_not_override_promo():
         assert s.get(db.User, user_id).subscription_status == "promo"
 
 
+# ─── WhatsApp bridge cleanup on access loss ──────────────────────────────────
+
+
+def test_event_subscription_deleted_disables_whatsapp_bridge():
+    """When a paying user is cancelled, their WA bridge must be stopped."""
+    import db, stripe_client
+    user_id = _make_user()
+    with db.session_scope() as s:
+        s.get(db.User, user_id).subscription_status = "active"
+        s.add(db.WhatsAppBridge(user_id=user_id, port=3035, auth_dir="x", status="running"))
+    event = _event("customer.subscription.deleted", user_id=user_id)
+    import whatsapp_supervisor
+    with patch.object(whatsapp_supervisor, "disable_for_user", return_value=True) as mock_dis:
+        stripe_client.apply_event_to_db(event)
+    mock_dis.assert_called_once_with(user_id)
+
+
+def test_event_payment_failed_disables_whatsapp_bridge():
+    """past_due also costs access → bridge must stop."""
+    import db, stripe_client
+    user_id = _make_user()
+    with db.session_scope() as s:
+        s.get(db.User, user_id).subscription_status = "active"
+    event = _event("invoice.payment_failed", user_id=user_id)
+    import whatsapp_supervisor
+    with patch.object(whatsapp_supervisor, "disable_for_user") as mock_dis:
+        stripe_client.apply_event_to_db(event)
+    mock_dis.assert_called_once_with(user_id)
+
+
+def test_event_subscription_updated_to_inactive_disables_bridge():
+    import db, stripe_client
+    user_id = _make_user()
+    with db.session_scope() as s:
+        s.get(db.User, user_id).subscription_status = "active"
+    event = _event("customer.subscription.updated", user_id=user_id, status="incomplete_expired")
+    import whatsapp_supervisor
+    with patch.object(whatsapp_supervisor, "disable_for_user") as mock_dis:
+        stripe_client.apply_event_to_db(event)
+    mock_dis.assert_called_once_with(user_id)
+
+
+def test_event_checkout_completed_does_not_disable_bridge():
+    """Going inactive → active mustn't trigger cleanup."""
+    import db, stripe_client
+    user_id = _make_user()
+    with db.session_scope() as s:
+        s.get(db.User, user_id).subscription_status = "inactive"
+    event = _event("checkout.session.completed", user_id=user_id)
+    import whatsapp_supervisor
+    with patch.object(whatsapp_supervisor, "disable_for_user") as mock_dis:
+        stripe_client.apply_event_to_db(event)
+    mock_dis.assert_not_called()
+
+
+def test_event_for_promo_user_does_not_touch_bridge():
+    """Stripe cannot revoke promo access — bridge stays up."""
+    import db, stripe_client
+    user_id = _make_user()
+    with db.session_scope() as s:
+        s.get(db.User, user_id).subscription_status = "promo"
+    event = _event("customer.subscription.updated", user_id=user_id, status="canceled")
+    import whatsapp_supervisor
+    with patch.object(whatsapp_supervisor, "disable_for_user") as mock_dis:
+        stripe_client.apply_event_to_db(event)
+    mock_dis.assert_not_called()
+
+
+def test_disable_for_user_failure_does_not_break_webhook():
+    """If WA cleanup blows up, the Stripe webhook handler still succeeds."""
+    import db, stripe_client
+    user_id = _make_user()
+    with db.session_scope() as s:
+        s.get(db.User, user_id).subscription_status = "active"
+    event = _event("customer.subscription.deleted", user_id=user_id)
+    import whatsapp_supervisor
+    with patch.object(whatsapp_supervisor, "disable_for_user", side_effect=RuntimeError("oops")):
+        # must not raise
+        stripe_client.apply_event_to_db(event)
+    with db.session_scope() as s:
+        # status mutation still committed
+        assert s.get(db.User, user_id).subscription_status == "cancelled"
+
+
 # ─── cancel_subscription ─────────────────────────────────────────────────────
 
 

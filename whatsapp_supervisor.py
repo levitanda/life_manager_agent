@@ -342,3 +342,27 @@ def shutdown_all() -> None:
             stop_bridge(uid, grace_seconds=2.0)
         except Exception as e:
             logger.warning("shutdown_all: failed to stop user=%s: %s", uid, e)
+
+
+def disable_for_user(user_id: int) -> bool:
+    """Stop the user's bridge because they've lost access (sub cancelled, etc).
+
+    Skips bridges marked status='external' — those are managed outside this
+    supervisor (Daria's pre-migration single-user bridge). Returns True if a
+    bridge was actually stopped, False if there was nothing to do or the row
+    is external.
+    """
+    import db
+    with db.session_scope() as s:
+        row = s.get(db.WhatsAppBridge, user_id)
+        if row is None:
+            return False
+        if row.status == "external":
+            logger.info("disable_for_user: skipping external bridge user=%s", user_id)
+            return False
+    try:
+        stop_bridge(user_id)
+        return True
+    except Exception as e:
+        logger.warning("disable_for_user: stop_bridge failed user=%s: %s", user_id, e)
+        return False

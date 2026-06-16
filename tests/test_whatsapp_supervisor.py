@@ -250,3 +250,47 @@ def test_mark_running_flips_status():
     whatsapp_supervisor.mark_running(user_id)
     with db.session_scope() as s:
         assert s.get(db.WhatsAppBridge, user_id).status == "running"
+
+
+# ─── disable_for_user (cleanup on access loss) ────────────────────────────────
+
+
+def test_disable_for_user_stops_running_bridge():
+    import whatsapp_supervisor, db
+    user_id = _make_user(1)
+    with db.session_scope() as s:
+        s.add(db.WhatsAppBridge(user_id=user_id, port=3031, auth_dir="x", status="running"))
+    with patch.object(whatsapp_supervisor, "stop_bridge", return_value=True) as mock_stop:
+        assert whatsapp_supervisor.disable_for_user(user_id) is True
+        mock_stop.assert_called_once_with(user_id)
+
+
+def test_disable_for_user_skips_external_bridge():
+    """External bridges (Daria's legacy single-user setup) must not be touched."""
+    import whatsapp_supervisor, db
+    user_id = _make_user(1)
+    with db.session_scope() as s:
+        s.add(db.WhatsAppBridge(user_id=user_id, port=3030, auth_dir="x", status="external"))
+    with patch.object(whatsapp_supervisor, "stop_bridge") as mock_stop:
+        assert whatsapp_supervisor.disable_for_user(user_id) is False
+        mock_stop.assert_not_called()
+    with db.session_scope() as s:
+        assert s.get(db.WhatsAppBridge, user_id).status == "external"
+
+
+def test_disable_for_user_noop_when_no_row():
+    import whatsapp_supervisor
+    user_id = _make_user(1)
+    with patch.object(whatsapp_supervisor, "stop_bridge") as mock_stop:
+        assert whatsapp_supervisor.disable_for_user(user_id) is False
+        mock_stop.assert_not_called()
+
+
+def test_disable_for_user_swallows_stop_errors():
+    import whatsapp_supervisor, db
+    user_id = _make_user(1)
+    with db.session_scope() as s:
+        s.add(db.WhatsAppBridge(user_id=user_id, port=3031, auth_dir="x", status="running"))
+    with patch.object(whatsapp_supervisor, "stop_bridge", side_effect=RuntimeError("boom")):
+        # Must not raise — webhook handler relies on this not crashing.
+        assert whatsapp_supervisor.disable_for_user(user_id) is False

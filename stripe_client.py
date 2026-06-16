@@ -100,7 +100,12 @@ def _user_id_from_event(event: dict) -> Optional[int]:
 
 
 def apply_event_to_db(event: dict) -> None:
-    """Mutate the user row based on the Stripe event type. Idempotent."""
+    """Mutate the user row based on the Stripe event type. Idempotent.
+
+    When the transition takes a user from has_access → no access, also
+    disable their WhatsApp bridge so the per-user Node process doesn't
+    keep running for a cancelled customer.
+    """
     etype = event.get("type", "")
     obj = event.get("data", {}).get("object", {}) or {}
     user_id = _user_id_from_event(event)
@@ -109,11 +114,15 @@ def apply_event_to_db(event: dict) -> None:
         return
 
     import db
+    had_access = False
+    lost_access = False
     with db.session_scope() as s:
         user = s.get(db.User, user_id)
         if user is None:
             logger.warning("Stripe event %s for unknown user_id=%s", etype, user_id)
             return
+
+        had_access = user.has_access()
 
         if etype == "checkout.session.completed":
             user.subscription_status = "active"
@@ -147,6 +156,18 @@ def apply_event_to_db(event: dict) -> None:
 
         else:
             logger.debug("Stripe event %s ignored", etype)
+
+        lost_access = had_access and not user.has_access()
+
+    if lost_access:
+        try:
+            import whatsapp_supervisor
+            stopped = whatsapp_supervisor.disable_for_user(user_id)
+            if stopped:
+                logger.info("WA bridge disabled for user=%s after access loss", user_id)
+        except Exception as e:
+            # Webhook must still ack to Stripe — log and move on.
+            logger.warning("WA bridge cleanup failed user=%s: %s", user_id, e)
 
 
 def cancel_subscription(user_id: int) -> bool:
