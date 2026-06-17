@@ -215,12 +215,58 @@ async def test_step3_tz_other_validates_with_pytz():
 @pytest.mark.asyncio
 async def test_step4_morning_time_preset_persists():
     uid = _mk_user()
-    import onboarding_wizard as w
+    import onboarding_wizard as w, db
     upd = _mk_update(callback_data="wiz:time:morning:07:00")
     ctx = _mk_ctx(user_id=uid)
     state = await w.step_time_handle_button(upd, ctx)
     assert ctx.user_data["wizard"]["data"]["morning_time"] == "07:00"
     assert state == w.STEP_EVENING_TIME
+    # Per-step persistence: must already be in DB even before finalize.
+    with db.session_scope() as s:
+        assert s.get(db.User, uid).morning_time == "07:00"
+
+
+@pytest.mark.asyncio
+async def test_step4_morning_time_typed_other_normalizes_to_two_digits():
+    """If user types '8:30' (single-digit hour) after picking Other, store
+    as '08:30' so the scheduler's HH:MM comparison matches. Without this
+    normalization the digest would silently never fire."""
+    uid = _mk_user()
+    import onboarding_wizard as w, db
+    ctx = _mk_ctx(user_id=uid)
+    ctx.user_data["wizard"]["awaiting"] = "time_morning_text"
+    upd = _mk_update(text="8:30")
+    await w.step_time_handle_text(upd, ctx)
+    assert ctx.user_data["wizard"]["data"]["morning_time"] == "08:30"
+    with db.session_scope() as s:
+        assert s.get(db.User, uid).morning_time == "08:30"
+
+
+@pytest.mark.asyncio
+async def test_abandoned_wizard_persists_so_far_collected_fields():
+    """If a user fills name + city + timezone + morning_time but never
+    completes the wizard, those fields should still be in the DB so they
+    don't lose their work."""
+    uid = _mk_user()
+    import onboarding_wizard as w, db
+    ctx = _mk_ctx(user_id=uid)
+
+    upd = _mk_update(callback_data="wiz:lang:en")
+    await w.step_language_handle(upd, ctx)
+    upd = _mk_update(text="Mika")
+    await w.step_name_handle_text(upd, ctx)
+    upd = _mk_update(callback_data="wiz:tz:Asia/Tokyo")
+    await w.step_timezone_handle_button(upd, ctx)
+    upd = _mk_update(callback_data="wiz:time:morning:08:00")
+    await w.step_time_handle_button(upd, ctx)
+
+    # User bails — never calls finalize.
+    with db.session_scope() as s:
+        u = s.get(db.User, uid)
+        assert u.language == "en"
+        assert u.display_name == "Mika"
+        assert u.timezone == "Asia/Tokyo"
+        assert u.morning_time == "08:00"
 
 
 # ─── Step 6: Google OAuth ────────────────────────────────────────────────────

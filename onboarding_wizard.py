@@ -89,6 +89,72 @@ _TIME_RE = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
 _URL_RE = re.compile(r"^https?://", re.IGNORECASE)
 
 
+def _normalize_time(value: str) -> str:
+    """Coerce 'H:MM' to 'HH:MM' so the scheduler's HH:MM comparison matches.
+    Without this, a user typing '8:30' as a custom time would save '8:30'
+    in the DB; the scheduler builds 'HH:MM' from datetime.strftime so it
+    would never match and the digest would silently never fire.
+    """
+    m = re.match(r"^(\d{1,2}):(\d{2})$", value)
+    if not m:
+        return value
+    return f"{int(m.group(1)):02d}:{m.group(2)}"
+
+
+def _persist_news_selection(user_id, country_csv: str, custom_feeds: list) -> None:
+    """Write news_country + the full user_news_feeds set in one shot.
+    Rebuilds the user's feed rows from country presets and any custom RSS
+    the wizard collected. No-op when user_id is None."""
+    if user_id is None:
+        return
+    try:
+        import db
+        from news_presets import NEWS_PRESETS
+        with db.session_scope() as s:
+            u = s.get(db.User, user_id)
+            if u is not None:
+                u.news_country = country_csv or None
+            s.query(db.UserNewsFeed).filter_by(user_id=user_id).delete()
+            for c in [x for x in (country_csv or "").split(",") if x]:
+                for name, url in NEWS_PRESETS.get(c, []):
+                    s.add(db.UserNewsFeed(
+                        user_id=user_id, source_name=name, url=url, enabled=1,
+                    ))
+            for custom in custom_feeds:
+                s.add(db.UserNewsFeed(
+                    user_id=user_id,
+                    source_name=custom["source_name"],
+                    url=custom["url"],
+                    enabled=1,
+                ))
+    except Exception as e:
+        logger.warning("persist news_country for user=%s failed: %s", user_id, e)
+
+
+def _persist_field(user_id, field: str, value) -> None:
+    """Write a single users-table column right now.
+
+    The wizard's finalize step used to commit everything atomically, but
+    users who abandoned the conversation mid-flow lost everything they'd
+    typed. Saving per-step is far more forgiving and keeps the data the
+    user actually entered visible in /profile if they come back later.
+
+    Never raises — callers must not depend on success.
+    """
+    if user_id is None:
+        return
+    if field in ("morning_time", "evening_time") and isinstance(value, str):
+        value = _normalize_time(value)
+    try:
+        import db
+        with db.session_scope() as s:
+            u = s.get(db.User, user_id)
+            if u is not None:
+                setattr(u, field, value)
+    except Exception as e:
+        logger.warning("persist %s for user=%s failed: %s", field, user_id, e)
+
+
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
 
@@ -219,18 +285,7 @@ async def step_language_handle(update: Update, context) -> int:
     if lang not in ("ru", "en", "he"):
         return STEP_LANGUAGE
     w["data"]["language"] = lang
-
-    # Persist immediately so subsequent steps render in chosen language.
-    user_id = w.get("user_id")
-    if user_id is not None:
-        try:
-            import db
-            with db.session_scope() as s:
-                u = s.get(db.User, user_id)
-                if u is not None:
-                    u.language = lang
-        except Exception as e:
-            logger.warning("language persist failed: %s", e)
+    _persist_field(w.get("user_id"), "language", lang)
 
     return await step_name_prompt(update, context)
 
@@ -347,6 +402,7 @@ async def step_name_handle_button(update: Update, context) -> int:
     if not first_name:
         return STEP_NAME
     w["data"]["display_name"] = first_name
+    _persist_field(w.get("user_id"), "display_name", first_name)
     return await step_city_prompt(update, context)
 
 
@@ -356,6 +412,7 @@ async def step_name_handle_text(update: Update, context) -> int:
     if not text:
         return STEP_NAME
     w["data"]["display_name"] = text
+    _persist_field(w.get("user_id"), "display_name", text)
     return await step_city_prompt(update, context)
 
 
@@ -399,6 +456,7 @@ async def step_city_handle_text(update: Update, context) -> int:
         await _send(update, _t("wizard.city.not_found", lang))
         return STEP_CITY
     w["data"]["city"] = raw
+    _persist_field(w.get("user_id"), "city", raw)
     await _send(update, _t("wizard.city.preview", lang, city=raw, weather=weather))
     return await step_timezone_prompt(update, context)
 
@@ -453,6 +511,7 @@ async def step_timezone_handle_button(update: Update, context) -> int:
         await _send(update, _t("wizard.tz.invalid", lang))
         return STEP_TIMEZONE
     w["data"]["timezone"] = value
+    _persist_field(w.get("user_id"), "timezone", value)
     w.pop("awaiting", None)
     return await step_morning_time_prompt(update, context)
 
@@ -467,6 +526,7 @@ async def step_timezone_handle_text(update: Update, context) -> int:
         await _send(update, _t("wizard.tz.invalid", lang))
         return STEP_TIMEZONE
     w["data"]["timezone"] = raw
+    _persist_field(w.get("user_id"), "timezone", raw)
     w.pop("awaiting", None)
     return await step_morning_time_prompt(update, context)
 
@@ -549,7 +609,9 @@ async def step_time_handle_button(update: Update, context) -> int:
         await _send(update, _t("wizard.time.invalid", lang))
         return STEP_MORNING_TIME if slot == "morning" else STEP_EVENING_TIME
 
-    w["data"][field] = value
+    normalized = _normalize_time(value)
+    w["data"][field] = normalized
+    _persist_field(w.get("user_id"), field, normalized)
     w.pop("awaiting", None)
     if slot == "morning":
         return await step_evening_time_prompt(update, context)
@@ -565,13 +627,16 @@ async def step_time_handle_text(update: Update, context) -> int:
         await _send(update, _t("wizard.time.invalid", lang))
         return w.get("step", STEP_MORNING_TIME)
 
+    normalized = _normalize_time(raw)
     awaiting = w.get("awaiting", "")
     if "morning" in awaiting:
-        w["data"]["morning_time"] = raw
+        w["data"]["morning_time"] = normalized
+        _persist_field(w.get("user_id"), "morning_time", normalized)
         w.pop("awaiting", None)
         return await step_evening_time_prompt(update, context)
     elif "evening" in awaiting:
-        w["data"]["evening_time"] = raw
+        w["data"]["evening_time"] = normalized
+        _persist_field(w.get("user_id"), "evening_time", normalized)
         w.pop("awaiting", None)
         return await step_google_prompt(update, context)
     # Defensive fallback.
@@ -737,12 +802,16 @@ async def step_news_handle_button(update: Update, context) -> int:
         # Clear the set; user explicitly wants no news.
         w["news_countries"] = set()
         w["data"]["news_country"] = ""
+        _persist_news_selection(w.get("user_id"), "", [])
         return await step_personality_prompt(update, context)
 
     if action == "done":
         # Persist the multi-select + any custom RSS rows.
         country_csv = ",".join(sorted(chosen)) if chosen else ""
         w["data"]["news_country"] = country_csv
+        _persist_news_selection(
+            w.get("user_id"), country_csv, w.get("custom_rss") or [],
+        )
         return await step_personality_prompt(update, context)
 
     return STEP_NEWS
